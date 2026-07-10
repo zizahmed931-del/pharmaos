@@ -1,0 +1,29 @@
+[project]
+name = "pharmaos-api"
+version = "1.1.0"
+description = "PharmaOS API — FastAPI backend (local device + cloud). App code lands from P0-M6."
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+# E/F: pycodestyle+pyflakes, I: isort, N: pep8-naming, UP: pyupgrade,
+# B: bugbear, ASYNC: async checks, S: bandit security, C4: comprehensions, SIM: simplify.
+select = ["E", "F", "I", "N", "UP", "B", "ASYNC", "S", "C4", "SIM"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"

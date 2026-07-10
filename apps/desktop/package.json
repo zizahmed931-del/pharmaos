@@ -1,0 +1,7 @@
+{
+  "name": "@pharmaos/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PharmaOS local device app (Electron wrapper around Next.js). Scaffolded in P0-M10.",
+  "type": "module"
+}
