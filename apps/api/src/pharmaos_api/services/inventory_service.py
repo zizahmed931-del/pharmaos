@@ -16,15 +16,18 @@ import datetime as dt
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.audit import AuditAction
 from pharmaos_api.errors import ApiError, ErrorCode
-from pharmaos_api.models import MedicationBatch, StockMovement, User
+from pharmaos_api.models import Branch, Medication, MedicationBatch, StockMovement, User
 from pharmaos_api.services import audit_service
 
 _BATCH_STATUSES = {"active", "quarantined", "expired", "recalled", "depleted"}
+MAX_PAGE_SIZE = 100
+# Low-stock threshold: reorder point if set, else the minimum level (0 = untracked).
+_LOW_THRESHOLD = "COALESCE(NULLIF(bi.reorder_point, 0), NULLIF(bi.min_stock_level, 0), 0)"
 
 
 async def apply_cache_delta(
@@ -237,3 +240,196 @@ async def get_batch(session: AsyncSession, batch_id: uuid.UUID) -> MedicationBat
     if batch is None:
         raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Batch not found.")
     return batch
+
+
+# --------------------------- read models (UI screens) ---------------------------
+
+
+async def list_inventory(
+    session: AsyncSession,
+    *,
+    branch_id: uuid.UUID,
+    search: str | None = None,
+    low_stock_only: bool = False,
+    skip: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict[str, object]], int]:
+    """Stock-on-hand per medication for a branch (reads the derived cache).
+
+    Search reuses the catalog's Arabic normalization (trigram + ILIKE); low-stock
+    ranks first so the reorder queue is always on top.
+    """
+    capped = min(max(limit, 1), MAX_PAGE_SIZE)
+    where = ["bi.branch_id = :b", "NOT bi.is_deleted", "NOT m.is_deleted"]
+    params: dict[str, object] = {"b": branch_id}
+    if search and search.strip():
+        where.append(
+            "(normalize_arabic(m.trade_name_ar) % normalize_arabic(:q) "
+            "OR m.trade_name ILIKE '%' || :q || '%' "
+            "OR m.trade_name_ar ILIKE '%' || :q || '%')"
+        )
+        params["q"] = search.strip()
+    if low_stock_only:
+        where.append(f"({_LOW_THRESHOLD} > 0 AND bi.cached_quantity <= {_LOW_THRESHOLD})")
+    where_sql = " AND ".join(where)
+
+    total = (
+        await session.execute(
+            text(
+                f"SELECT COUNT(*) FROM branch_inventory bi "  # noqa: S608 (fragments are constant)
+                f"JOIN medications m ON m.id = bi.medication_id WHERE {where_sql}"
+            ).bindparams(**params)
+        )
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            text(
+                f"""
+                SELECT bi.medication_id, m.trade_name, m.trade_name_ar, bi.cached_quantity,
+                       bi.min_stock_level, bi.reorder_point, bi.shelf_location,
+                       ({_LOW_THRESHOLD} > 0
+                        AND bi.cached_quantity <= {_LOW_THRESHOLD}) AS low_stock
+                FROM branch_inventory bi JOIN medications m ON m.id = bi.medication_id
+                WHERE {where_sql}
+                ORDER BY low_stock DESC, m.trade_name
+                OFFSET :skip LIMIT :lim
+                """  # noqa: S608 (all interpolated fragments are constant; values are bound)
+            ).bindparams(**params, skip=max(skip, 0), lim=capped)
+        )
+    ).all()
+    return (
+        [
+            {
+                "medication_id": str(r[0]),
+                "trade_name": r[1],
+                "trade_name_ar": r[2],
+                "cached_quantity": str(r[3]),
+                "min_stock_level": str(r[4]) if r[4] is not None else None,
+                "reorder_point": str(r[5]) if r[5] is not None else None,
+                "shelf_location": r[6],
+                "low_stock": bool(r[7]),
+            }
+            for r in rows
+        ],
+        int(total),
+    )
+
+
+async def list_batches(
+    session: AsyncSession,
+    *,
+    branch_id: uuid.UUID,
+    medication_id: uuid.UUID | None = None,
+    status: str | None = None,
+    skip: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict[str, object]], int]:
+    """Batches for a branch, FEFO order (nearest expiry first). Carries the
+    medication name so a branch-wide near-expiry view needs no extra lookups."""
+    capped = min(max(limit, 1), MAX_PAGE_SIZE)
+    conditions = [
+        MedicationBatch.branch_id == branch_id,
+        MedicationBatch.is_deleted.is_(False),
+    ]
+    if medication_id is not None:
+        conditions.append(MedicationBatch.medication_id == medication_id)
+    if status is not None:
+        conditions.append(MedicationBatch.status == status)
+
+    total = (
+        await session.execute(select(func.count(MedicationBatch.id)).where(*conditions))
+    ).scalar_one()
+    rows = (
+        await session.execute(
+            select(
+                MedicationBatch,
+                Medication.trade_name,
+                Medication.trade_name_ar,
+            )
+            .join(Medication, Medication.id == MedicationBatch.medication_id)
+            .where(*conditions)
+            .order_by(MedicationBatch.expiry_date, MedicationBatch.received_at)
+            .offset(max(skip, 0))
+            .limit(capped)
+        )
+    ).all()
+    return [
+        {
+            "id": str(b.id),
+            "branch_id": str(b.branch_id),
+            "medication_id": str(b.medication_id),
+            "trade_name": trade_name,
+            "trade_name_ar": trade_name_ar,
+            "batch_number": b.batch_number,
+            "expiry_date": b.expiry_date.isoformat(),
+            "quantity": str(b.quantity),
+            "purchase_price": str(b.purchase_price),
+            "supplier_id": str(b.supplier_id) if b.supplier_id else None,
+            "status": b.status,
+            "received_at": b.received_at.isoformat(),
+        }
+        for b, trade_name, trade_name_ar in rows
+    ], int(total)
+
+
+async def list_branches_min(session: AsyncSession) -> list[dict[str, str]]:
+    """Minimal active-branch list for operational branch selection (inventory is
+    branch-scoped). Distinct from the settings-guarded branch config endpoint."""
+    rows = (
+        await session.execute(
+            select(Branch.id, Branch.name, Branch.currency_code)
+            .where(Branch.is_deleted.is_(False), Branch.is_active.is_(True))
+            .order_by(Branch.name)
+        )
+    ).all()
+    return [{"id": str(r[0]), "name": r[1], "currency_code": r[2]} for r in rows]
+
+
+# ------------------------------ suppliers (minimal) ------------------------------
+
+
+async def list_suppliers(session: AsyncSession) -> list[dict[str, str]]:
+    rows = (
+        await session.execute(
+            text("SELECT id, name FROM suppliers WHERE NOT is_deleted ORDER BY name")
+        )
+    ).all()
+    return [{"id": str(r[0]), "name": r[1]} for r in rows]
+
+
+async def create_supplier(session: AsyncSession, *, actor: User, name: str) -> dict[str, str]:
+    """Minimal (Q2) supplier: name only. Full supplier management is Phase 2."""
+    clean = name.strip()
+    if not clean:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Supplier name is required.")
+    row = (
+        await session.execute(
+            text(
+                "INSERT INTO suppliers (name, created_by, updated_by) "
+                "VALUES (:n, :a, :a) RETURNING id, name"
+            ).bindparams(n=clean, a=actor.id)
+        )
+    ).one()
+    await session.commit()
+    return {"id": str(row[0]), "name": row[1]}
+
+
+# ------------------------------ boot-time integrity ------------------------------
+
+
+async def boot_check_and_heal(session: AsyncSession) -> dict[str, dict[str, object]]:
+    """At app boot: verify cached_quantity == SUM(active batches) for every branch;
+    self-heal any drift by rebuilding from batch truth (the cache is derived, so a
+    rebuild is always safe). Returns a per-branch summary for the boot log."""
+    branch_ids = (
+        (await session.execute(select(Branch.id).where(Branch.is_deleted.is_(False))))
+        .scalars()
+        .all()
+    )
+    summary: dict[str, dict[str, object]] = {}
+    for branch_id in branch_ids:
+        drift = await drift_check(session, branch_id)
+        if drift:
+            await rebuild_cache(session, branch_id)
+        summary[str(branch_id)] = {"drifted": len(drift), "healed": bool(drift)}
+    return summary

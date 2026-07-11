@@ -160,3 +160,256 @@ export function updateBranch(branchId: string, values: Record<string, unknown>) 
     body: JSON.stringify(values),
   });
 }
+
+// ---- Catalog editor: packaging levels & barcodes (P1-M7 UI; API since M5) ----
+
+export interface Unit {
+  id: string;
+  name_ar: string;
+  name_en: string | null;
+}
+
+export interface PackagingLevel {
+  id: string;
+  level: number;
+  unit_id: string;
+  name_ar: string;
+  qty_in_parent: string | null;
+  is_sellable: boolean;
+  selling_price: string;
+  is_default_sale: boolean;
+  price_source: string;
+}
+
+export interface Barcode {
+  id: string;
+  barcode: string;
+  barcode_type: string;
+  packaging_id: string | null;
+  is_primary: boolean;
+}
+
+export interface MedicationDetail {
+  id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  scientific_name: string | null;
+  manufacturer: string | null;
+  drug_class: string | null;
+  route: string | null;
+  requires_prescription: boolean;
+  controlled_substance: boolean;
+  storage_conditions: string | null;
+  eda_registration_no: string | null;
+  gtin: string | null;
+  is_active: boolean;
+  packaging: PackagingLevel[];
+  barcodes: Barcode[];
+}
+
+/** One packaging level as submitted by the editor (server validates the set). */
+export interface PackagingLevelInput {
+  level: number;
+  unit_id: string;
+  name_ar: string;
+  qty_in_parent: string | null;
+  selling_price: string;
+  is_sellable: boolean;
+  is_default_sale: boolean;
+}
+
+export function listUnits() {
+  return apiFetch<Unit[]>('/api/v1/catalog/units');
+}
+
+export function getMedication(id: string) {
+  return apiFetch<MedicationDetail>(`/api/v1/medications/${id}`);
+}
+
+export function updateMedication(id: string, values: Record<string, unknown>) {
+  return apiFetch<MedicationDetail>(`/api/v1/medications/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(values),
+  });
+}
+
+export function deleteMedication(id: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/v1/medications/${id}`, { method: 'DELETE' });
+}
+
+export function putPackaging(id: string, levels: PackagingLevelInput[], priceSource = 'manual') {
+  return apiFetch<PackagingLevel[]>(`/api/v1/medications/${id}/packaging`, {
+    method: 'PUT',
+    body: JSON.stringify({ levels, price_source: priceSource }),
+  });
+}
+
+export function addBarcode(
+  id: string,
+  input: {
+    barcode: string;
+    barcode_type?: string;
+    packaging_id?: string | null;
+    is_primary?: boolean;
+  },
+) {
+  return apiFetch<Barcode>(`/api/v1/medications/${id}/barcodes`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function deleteBarcode(id: string, barcodeId: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/v1/medications/${id}/barcodes/${barcodeId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ---- Inventory: stock on hand, batches, receiving, adjustments (P1-M7) ----
+
+export interface InventoryBranch {
+  id: string;
+  name: string;
+  currency_code: string;
+}
+
+export interface InventoryRow {
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  cached_quantity: string;
+  min_stock_level: string | null;
+  reorder_point: string | null;
+  shelf_location: string | null;
+  low_stock: boolean;
+}
+
+export interface Batch {
+  id: string;
+  branch_id: string;
+  medication_id: string;
+  trade_name?: string;
+  trade_name_ar?: string | null;
+  batch_number: string;
+  expiry_date: string;
+  quantity: string;
+  purchase_price: string;
+  supplier_id: string | null;
+  status: string;
+  received_at: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+}
+
+export interface Gs1Parse {
+  gtin: string | null;
+  expiry_date: string | null;
+  batch_number: string | null;
+  serial_number: string | null;
+  medication: {
+    id: string;
+    trade_name: string;
+    trade_name_ar: string | null;
+    gtin: string | null;
+  } | null;
+}
+
+export interface ReceiveInput {
+  branch_id: string;
+  medication_id: string;
+  batch_number: string;
+  expiry_date: string;
+  quantity: string;
+  purchase_price: string;
+  supplier_id?: string | null;
+}
+
+export function listInventoryBranches() {
+  return apiFetch<InventoryBranch[]>('/api/v1/inventory/branches');
+}
+
+export function listInventory(
+  branchId: string,
+  opts: { search?: string; lowStock?: boolean } = {},
+) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.search) params.set('search', opts.search);
+  if (opts.lowStock) params.set('low_stock', 'true');
+  return apiFetch<InventoryRow[]>(`/api/v1/inventory?${params.toString()}`);
+}
+
+export function listBatches(
+  branchId: string,
+  opts: { medicationId?: string; status?: string } = {},
+) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.medicationId) params.set('medication_id', opts.medicationId);
+  if (opts.status) params.set('status', opts.status);
+  return apiFetch<Batch[]>(`/api/v1/inventory/batches?${params.toString()}`);
+}
+
+export function parseGs1(code: string) {
+  return apiFetch<Gs1Parse>(`/api/v1/catalog/parse-gs1?code=${encodeURIComponent(code)}`);
+}
+
+export function receiveStock(input: ReceiveInput) {
+  return apiFetch<Batch>('/api/v1/inventory/receive', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function adjustBatch(batchId: string, quantityDelta: string, reason: string) {
+  return apiFetch<Batch>(`/api/v1/inventory/batches/${batchId}/adjust`, {
+    method: 'POST',
+    body: JSON.stringify({ quantity_delta: quantityDelta, reason }),
+  });
+}
+
+export function setBatchStatus(batchId: string, status: string, reason = '') {
+  return apiFetch<Batch>(`/api/v1/inventory/batches/${batchId}/status`, {
+    method: 'POST',
+    body: JSON.stringify({ status, reason }),
+  });
+}
+
+export function listSuppliers() {
+  return apiFetch<Supplier[]>('/api/v1/inventory/suppliers');
+}
+
+export function createSupplier(name: string) {
+  return apiFetch<Supplier>('/api/v1/inventory/suppliers', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  });
+}
+
+export interface DriftReport {
+  drift: Array<{ medication_id: string; cached: string; truth: string }>;
+  ok: boolean;
+}
+
+export function checkDrift(branchId: string) {
+  return apiFetch<DriftReport>(`/api/v1/inventory/drift?branch_id=${branchId}`);
+}
+
+export function rebuildCache(branchId: string) {
+  return apiFetch<{ rows: number }>('/api/v1/inventory/rebuild', {
+    method: 'POST',
+    body: JSON.stringify({ branch_id: branchId }),
+  });
+}
+
+export interface MedOption {
+  id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+}
+
+/** Catalog search for the receiving picker (a batch can be received for any med). */
+export function searchMedications(term: string) {
+  return apiFetch<MedOption[]>(`/api/v1/medications?limit=10&search=${encodeURIComponent(term)}`);
+}

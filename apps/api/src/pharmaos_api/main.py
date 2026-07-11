@@ -6,6 +6,8 @@
 """
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -13,13 +15,52 @@ from fastapi.responses import JSONResponse
 
 from pharmaos_api.errors import ApiError, ErrorCode, error_envelope, success_envelope
 from pharmaos_api.middleware import LoginRateLimitMiddleware, SecurityHeadersMiddleware
-from pharmaos_api.routers import auth, catalog, config, pos, users
+from pharmaos_api.routers import auth, catalog, config, inventory, pos, users
 
 logger = logging.getLogger(__name__)
 
 
+async def _boot_inventory_maintenance() -> None:
+    """Verify the derived inventory cache at boot and self-heal any drift.
+
+    CLAUDE.md invariant: cached_quantity == SUM(active batches) — rebuilt
+    periodically and AT BOOT. This runs once on startup so a device coming back
+    online (e.g. after the M12 PostgreSQL-restart scenario) always serves a
+    correct cache. It must never block or crash startup.
+    """
+    from pharmaos_api.config import get_settings
+
+    if get_settings().pharmaos_env == "test":
+        return  # tests manage their own data; no boot maintenance
+    try:
+        from pharmaos_api.db import get_session_factory
+        from pharmaos_api.services import inventory_service
+
+        async with get_session_factory()() as session:
+            summary = await inventory_service.boot_check_and_heal(session)
+        healed = {bid: s for bid, s in summary.items() if s.get("healed")}
+        if healed:
+            logger.warning("inventory cache drift healed at boot: %s", healed)
+        else:
+            logger.info("inventory cache verified at boot (%d branch(es))", len(summary))
+    except Exception:  # boot maintenance is best-effort — never stop the API
+        logger.exception("inventory boot maintenance skipped (non-fatal)")
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await _boot_inventory_maintenance()
+    yield
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="PharmaOS API", version="1.1.0", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="PharmaOS API",
+        version="1.1.0",
+        docs_url=None,
+        redoc_url=None,
+        lifespan=_lifespan,
+    )
 
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LoginRateLimitMiddleware)
@@ -29,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(users.router)
     app.include_router(config.router)
     app.include_router(catalog.router)
+    app.include_router(inventory.router)
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:

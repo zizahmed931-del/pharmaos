@@ -4,6 +4,7 @@ import { Badge, Button, Card, CardContent, Input, Label, Spinner } from '@pharma
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 
+import { MedicationEditor } from '@/components/medication-editor';
 import { ApiRequestError, apiFetch } from '@/lib/api';
 import { useAuth } from '@/lib/auth-store';
 import { t } from '@/lib/i18n';
@@ -24,10 +25,12 @@ const EMPTY = { trade_name: '', trade_name_ar: '', scientific_name: '', manufact
 export default function CatalogPage() {
   const qc = useQueryClient();
   const canAdd = useAuth((s) => s.hasPermission('inventory.add'));
+  const canEdit = useAuth((s) => s.hasPermission('inventory.edit'));
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(EMPTY);
+  const [editId, setEditId] = useState<string | null>(null);
 
   const medsQuery = useQuery({
     queryKey: ['medications', query],
@@ -129,6 +132,7 @@ export default function CatalogPage() {
                   <th className="p-2 text-start">{t('catalog.scientific_name')}</th>
                   <th className="p-2 text-start">{t('catalog.manufacturer')}</th>
                   <th className="p-2 text-start"></th>
+                  <th className="p-2 text-start">{t('catalog.actions')}</th>
                 </tr>
               </thead>
               <tbody>
@@ -146,6 +150,13 @@ export default function CatalogPage() {
                         <Badge tone="warning">{t('catalog.requires_prescription')}</Badge>
                       )}
                     </td>
+                    <td className="p-2">
+                      {canEdit && (
+                        <Button size="sm" variant="outline" onClick={() => setEditId(m.id)}>
+                          {t('catalog.edit')}
+                        </Button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -153,6 +164,8 @@ export default function CatalogPage() {
           )}
         </CardContent>
       </Card>
+
+      {editId && <MedicationEditor medId={editId} open onClose={() => setEditId(null)} />}
     </div>
   );
 }
