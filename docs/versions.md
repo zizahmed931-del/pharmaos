@@ -97,13 +97,25 @@ PyJWT 2.13.0 · cryptography 49.0.0 · keyring 25.7.0 · celery 5.6.3 · redis 8
 httpx 0.28.1 · pytest 9.1.1 · pytest-asyncio 1.4.0 · ruff 0.15.21 · black 26.5.1 · mypy 2.2.0.
 All satisfy the CLAUDE.md matrix (FastAPI ≥0.115 / Pydantic v2 / SQLAlchemy 2.0 async).
 
-## JS pins — status
+## JS pins — RESOLVED & verified (2026-07, first networked install, P1-M2)
 
-Frontend pins in package.json files reference EXISTING published versions
-(next 16.0.0 / react 19.0.0 / tailwindcss 4.0.0 / zustand 5.0.0 / @tanstack/react-query 5.59.0 ...).
-The "newest compatible" upgrade wave + lockfile generation happens at the first networked
-`pnpm install` (registry access was unavailable in the authoring environment) — record the
-resulting matrix here when it lands.
+`pnpm install` succeeded once `registry.npmjs.org` was allowlisted; `pnpm-lock.yaml` is committed
+(the version-policy gate). Verified by `pnpm typecheck` (shared/ui/web) + a clean **Next.js 16
+production build** of apps/web.
+
+next 16.0.0 · react/react-dom 19.0.0 · tailwindcss + @tailwindcss/postcss 4.3.2 · zustand 5.0.0 ·
+@tanstack/react-query 5.59.0 · react-hook-form 7.53.0 · zod 3.23.8 · @hookform/resolvers 3.9.1 ·
+@fontsource-variable/cairo 5.2.7 · @fontsource-variable/inter 5.2.8 · typescript 5.7.2 ·
+eslint 9.17.0 · typescript-eslint 8.18.1 · prettier 3.4.2 · turbo 2.3.3.
+
+Wave adjustments at this gate (compatibility-first, then newest):
+- **tailwindcss / @tailwindcss/postcss 4.0.0 → 4.3.2**: 4.0.0's oxide scanner is incompatible with
+  Next 16 Turbopack (`Missing field 'negated' on ScannerOptions.sources`); 4.3.2 builds clean.
+- **Fonts: next/font/google → self-hosted @fontsource-variable (Cairo + Inter)**: Google Fonts is
+  fetched at build time, breaking offline/reproducible builds (CLAUDE.md offline-first). Self-hosting
+  the same design-system fonts removes the build- and run-time Google dependency.
+- Dropped `erasableSyntaxOnly` from packages/shared tsconfig (needs TS 5.8; pinned TS is 5.7). Strip
+  safety stays enforced at runtime by the RBAC generator running under Node type-stripping.
 
 ## Upgrade log
 

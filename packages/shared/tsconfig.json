@@ -2,8 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "verbatimModuleSyntax": true,
-    "allowImportingTsExtensions": true,
-    "erasableSyntaxOnly": true
+    "allowImportingTsExtensions": true
   },
   "include": ["src/**/*.ts"]
 }

@@ -24,9 +24,9 @@
   --surface: #f8fafc;
   --border: #e2e8f0;
 
-  /* Typography (loaded via next/font — CSS variables) */
-  --font-arabic: var(--font-cairo), 'IBM Plex Arabic', sans-serif;
-  --font-numbers: var(--font-inter), sans-serif;
+  /* Typography — self-hosted Fontsource variable fonts (offline-first) */
+  --font-arabic: 'Cairo Variable', 'IBM Plex Arabic', sans-serif;
+  --font-numbers: 'Inter Variable', sans-serif;
 
   /* Spacing scale */
   --radius-sm: 6px;

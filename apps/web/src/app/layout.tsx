@@ -1,12 +1,13 @@
 import type { Metadata } from 'next';
-import { Cairo, Inter } from 'next/font/google';
+
+// Self-hosted fonts (offline-first — no Google Fonts dependency at build OR
+// runtime, per CLAUDE.md). Cairo = Arabic UI (ships the Arabic subset),
+// Inter = numbers. Family names: 'Cairo Variable' / 'Inter Variable'.
+import '@fontsource-variable/cairo/index.css';
+import '@fontsource-variable/inter/index.css';
 
 import { Providers } from './providers';
 import './globals.css';
-
-// Arabic UI font + Inter for numbers (CLAUDE.md design system).
-const cairo = Cairo({ subsets: ['arabic', 'latin'], variable: '--font-cairo' });
-const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export const metadata: Metadata = {
   title: 'PharmaOS — نظام إدارة الصيدلية',
@@ -19,7 +20,7 @@ export const metadata: Metadata = {
  */
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ar" dir="rtl" className={`${cairo.variable} ${inter.variable}`}>
+    <html lang="ar" dir="rtl">
       <body className="min-h-screen bg-surface antialiased">
         <Providers>{children}</Providers>
       </body>
