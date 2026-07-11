@@ -106,6 +106,10 @@ async def adjust_batch(
     if batch.quantity + quantity_delta < 0:
         raise ApiError(ErrorCode.STOCK_INSUFFICIENT, 409)
 
+    # Only ACTIVE batches contribute to the derived cache. Adjusting a
+    # quarantined/expired/recalled/depleted batch still moves the batch truth
+    # (a stock_movement) but must NOT touch the cache, or the invariant drifts.
+    was_active = batch.status == "active"
     batch.quantity = batch.quantity + quantity_delta
     if batch.quantity == 0 and batch.status == "active":
         batch.status = "depleted"
@@ -121,7 +125,8 @@ async def adjust_batch(
             created_by=actor.id,
         )
     )
-    await apply_cache_delta(session, batch.branch_id, batch.medication_id, quantity_delta)
+    if was_active:
+        await apply_cache_delta(session, batch.branch_id, batch.medication_id, quantity_delta)
     await audit_service.record(
         session,
         AuditAction.STOCK_ADJUSTED,

@@ -238,3 +238,44 @@ async def test_sale_maintains_cache_and_drift_rebuild(
     await inv.rebuild_cache(db_session, branch.id)
     assert await _cached(db_session, branch.id, med_id) == Decimal(28)
     assert await inv.drift_check(db_session, branch.id) == []
+
+
+async def test_adjust_on_non_active_batch_keeps_cache_consistent(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """A quarantined batch is NOT in the derived cache; adjusting it must move the
+    batch truth (a stock_movement) WITHOUT touching the cache, or the invariant
+    drifts. Regression for adjust_batch applying a cache delta unconditionally."""
+    bid = branch.id
+    med_id, _ = await _med_with_barcode(db_session)
+    batch = await inv.receive_stock(
+        db_session,
+        actor=actor,
+        branch_id=bid,
+        medication_id=med_id,
+        batch_number="QADJ-1",
+        expiry_date=dt.date.today() + dt.timedelta(days=200),
+        quantity=Decimal(50),
+        purchase_price=Decimal("1.00"),
+    )
+    batch_id = batch.id
+    batch = await inv.set_batch_status(
+        db_session, actor=actor, batch=batch, status="quarantined", reason="hold"
+    )
+    assert await _cached(db_session, bid, med_id) == Decimal(0)  # not sellable → not cached
+
+    # Adjust the QUARANTINED batch: physical truth changes, cache must stay 0.
+    batch = await inv.adjust_batch(
+        db_session, actor=actor, batch=batch, quantity_delta=Decimal(-10), reason="تلف"
+    )
+    assert batch.quantity == Decimal(40)
+    assert await _cached(db_session, bid, med_id) == Decimal(0)
+    assert await inv.drift_check(db_session, bid) == []
+
+    # Releasing back to active brings the ADJUSTED physical quantity into the cache.
+    batch = await inv.get_batch(db_session, batch_id)
+    batch = await inv.set_batch_status(
+        db_session, actor=actor, batch=batch, status="active", reason="ok"
+    )
+    assert await _cached(db_session, bid, med_id) == Decimal(40)
+    assert await inv.drift_check(db_session, bid) == []
