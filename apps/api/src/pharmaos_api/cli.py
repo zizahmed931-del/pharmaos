@@ -307,6 +307,18 @@ async def _skeleton_sale(barcode: str, qty: str, print_host: str | None, out_fil
         return 0
 
 
+async def _catalog_seed(file_path: str, price_source: str) -> int:
+    """P1-M6: seed/import the catalog from CSV (CC0 dataset) or XLSX (staff template)."""
+    import json as _json
+
+    from pharmaos_api.services.seed_service import seed_catalog
+
+    async with get_session_factory()() as session:
+        report = await seed_catalog(session, file_path=Path(file_path), price_source=price_source)
+    print(_json.dumps(report.as_dict(), ensure_ascii=False, indent=1))
+    return 0 if not report.errors else 3
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pharmaos-api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -336,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
     b_sale.add_argument("--print-host", help="Network ESC/POS printer IP (port 9100).")
     b_sale.add_argument("--out-file", default="receipt.escpos.bin")
 
+    c_seed = sub.add_parser("catalog-seed", help="Seed/import catalog from CSV or XLSX.")
+    c_seed.add_argument("--file", required=True)
+    c_seed.add_argument("--source", default="seed", choices=["seed", "import"])
+
     args = parser.parse_args(argv)
     if args.command == "bootstrap-admin":
         password = os.environ.get("PHARMAOS_ADMIN_PASSWORD") or getpass.getpass(
@@ -353,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_bootstrap_branch(args.name))
     if args.command == "skeleton-demo-data":
         return asyncio.run(_skeleton_demo_data())
+    if args.command == "catalog-seed":
+        return asyncio.run(_catalog_seed(args.file, args.source))
     if args.command == "skeleton-sale":
         return asyncio.run(_skeleton_sale(args.barcode, args.qty, args.print_host, args.out_file))
     return 2
