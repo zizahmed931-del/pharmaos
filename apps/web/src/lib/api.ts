@@ -476,3 +476,53 @@ export function createPosSale(input: {
     body: JSON.stringify(input),
   });
 }
+
+// ---- Receipt printing (P1-M9) ----
+
+export interface ReceiptLine {
+  name: string;
+  unit_name: string;
+  quantity: string;
+  unit_price: string;
+  line_total: string;
+}
+
+export interface InvoiceReceipt {
+  invoice_id: string;
+  invoice_number: string;
+  created_at: string;
+  created_at_display: string;
+  payment_method: string;
+  payment_method_display: string;
+  currency_code: string;
+  currency_symbol: string;
+  subtotal: string;
+  discount: string;
+  total: string;
+  branch_name: string;
+  pharmacy_name: string;
+  address: string | null;
+  phone: string | null;
+  license_number: string | null;
+  tax_registration_no: string | null;
+  thank_you_message: string;
+  return_policy: string | null;
+  paper_size: string;
+  show_qr_code: boolean;
+  show_pharmacist_signature: boolean;
+  qr_content: string | null;
+  thermal_ready: boolean;
+  lines: ReceiptLine[];
+}
+
+/** Composed receipt (same source as the thermal print) — feeds browser printing. */
+export function getInvoiceReceipt(invoiceId: string) {
+  return apiFetch<InvoiceReceipt>(`/api/v1/pos/invoices/${invoiceId}/receipt`);
+}
+
+export function printInvoice(invoiceId: string, opts: { open_drawer?: boolean } = {}) {
+  return apiFetch<{ printed: boolean; drawer: boolean; bytes: number }>(
+    `/api/v1/pos/invoices/${invoiceId}/print`,
+    { method: 'POST', body: JSON.stringify(opts) },
+  );
+}

@@ -20,6 +20,9 @@ export const ERROR_CODES = {
   ERECEIPT_REJECTED: 'E-ETA-001',
   TT_REPORT_FAILED: 'E-TT-001',
   SYNC_CONFLICT: 'E-SYN-001',
+  PRINTER_NOT_CONFIGURED: 'E-PRN-001', // لا توجد طابعة مهيأة على الجهاز
+  PRINTER_UNREACHABLE: 'E-PRN-002', // تعذر الوصول لطابعة الإيصالات
+  PAPER_NOT_THERMAL: 'E-PRN-003', // مقاس الورق ليس 80mm حرارياً
   UNEXPECTED: 'E-SYS-001',
 } as const;
 

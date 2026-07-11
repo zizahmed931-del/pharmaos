@@ -66,3 +66,27 @@ body {
   font-family: var(--font-numbers);
   font-variant-numeric: tabular-nums;
 }
+
+/* P1-M9 — browser-print fallback for receipts (A4/A5 paper, or no thermal
+   printer attached). On screen the printable receipt stays hidden; in print
+   media it becomes the ONLY visible element. */
+.receipt-print {
+  display: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .receipt-print,
+  .receipt-print * {
+    visibility: visible;
+  }
+  .receipt-print {
+    display: block;
+    position: absolute;
+    top: 0;
+    inset-inline-start: 0;
+    width: 100%;
+  }
+}

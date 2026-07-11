@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     country_code: str = "EG"
     default_currency: str = "EGP"
 
+    # Receipt printer (P1-M9) — device-local, non-secret. Network ESC/POS
+    # (JetDirect port 9100); the Electron USB transport is a later hardware item.
+    printer_host: str | None = None
+    printer_port: int = 9100
+    printer_timeout_seconds: float = 5.0
+
     @property
     def async_database_url(self) -> str:
         """SQLAlchemy async URL (asyncpg driver)."""

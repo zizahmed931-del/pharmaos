@@ -1,12 +1,16 @@
-"""POS endpoints (P1-M8: full point of sale).
+"""POS endpoints (P1-M8 full point of sale · P1-M9 receipt printing).
 
 Every endpoint carries a permission dependency (CLAUDE.md mandatory rule).
 - /scan resolves an exact barcode OR a 2D GS1 DataMatrix (Egyptian packs) and
   returns ALL sellable packaging levels so the UI can switch units locally.
 - /sale accepts explicit medication_id + packaging_id per line (unit switching
   and name-search lines) in addition to the plain-barcode skeleton shape.
+- /invoices/{id}/receipt + /invoices/{id}/print serve the SAME composed receipt
+  (receipt_service) as JSON for browser printing and as raw ESC/POS to the
+  thermal printer — with the drawer pulse for cash sales.
 """
 
+import asyncio
 import uuid
 from decimal import Decimal
 
@@ -15,12 +19,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pharmaos_api.config import get_settings as get_app_settings
 from pharmaos_api.db import get_session
 from pharmaos_api.deps import get_current_user, require_permission
-from pharmaos_api.errors import success_envelope
+from pharmaos_api.errors import ApiError, ErrorCode, success_envelope
 from pharmaos_api.models import InvoiceItem, User
+from pharmaos_api.printing.escpos import send_raw
 from pharmaos_api.security.csrf import enforce_csrf
-from pharmaos_api.services import catalog_service, sales_service
+from pharmaos_api.services import catalog_service, receipt_service, sales_service
 
 router = APIRouter(prefix="/api/v1/pos", tags=["pos"])
 
@@ -130,3 +136,110 @@ async def create_sale(
             ],
         }
     )
+
+
+# ------------------------- receipt printing (P1-M9) -------------------------
+
+
+def _receipt_json(r: receipt_service.InvoiceReceipt, *, thermal_ready: bool) -> dict[str, object]:
+    return {
+        "invoice_id": str(r.invoice_id),
+        "invoice_number": r.invoice_number,
+        "created_at": r.created_at.isoformat(),
+        "created_at_display": r.created_at.strftime("%Y-%m-%d %H:%M"),
+        "payment_method": r.payment_method,
+        "payment_method_display": r.payment_method_display,
+        "currency_code": r.currency_code,
+        "currency_symbol": r.currency_symbol,
+        "subtotal": str(r.subtotal),
+        "discount": str(r.discount),
+        "total": str(r.total),
+        "branch_name": r.branch_name,
+        "pharmacy_name": r.pharmacy_name,
+        "address": r.address,
+        "phone": r.phone,
+        "license_number": r.license_number,
+        "tax_registration_no": r.tax_registration_no,
+        "thank_you_message": r.thank_you_message,
+        "return_policy": r.return_policy,
+        "paper_size": r.paper_size,
+        "show_qr_code": r.show_qr_code,
+        "show_pharmacist_signature": r.show_pharmacist_signature,
+        "qr_content": r.qr_content,
+        "thermal_ready": thermal_ready,
+        "lines": [
+            {
+                "name": line.name,
+                "unit_name": line.unit_name,
+                "quantity": str(line.quantity),
+                "unit_price": str(line.unit_price),
+                "line_total": str(line.line_total),
+            }
+            for line in r.lines
+        ],
+    }
+
+
+@router.get("/invoices/{invoice_id}/receipt")
+async def invoice_receipt(
+    invoice_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_permission("sales.view")),
+) -> dict[str, object]:
+    """Composed receipt as JSON — feeds the browser-print fallback and previews.
+
+    `thermal_ready` tells the POS whether a direct ESC/POS print can succeed
+    (80mm paper + a configured printer) without attempting one.
+    """
+    receipt = await receipt_service.load_invoice_receipt(session, invoice_id)
+    cfg = get_app_settings()
+    thermal_ready = receipt.paper_size == receipt_service.THERMAL_PAPER and bool(cfg.printer_host)
+    return success_envelope(_receipt_json(receipt, thermal_ready=thermal_ready))
+
+
+class PrintIn(BaseModel):
+    """Optional overrides. printer_host/port default to the device .env config;
+    open_drawer defaults to `payment_method == "cash"` (the drawer opens only
+    when cash actually changes hands — not for card sales or reprints)."""
+
+    printer_host: str | None = Field(default=None, min_length=1, max_length=255)
+    printer_port: int | None = Field(default=None, ge=1, le=65535)
+    open_drawer: bool | None = None
+
+
+@router.post("/invoices/{invoice_id}/print")
+async def print_invoice(
+    invoice_id: uuid.UUID,
+    body: PrintIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_permission("sales.create")),
+) -> dict[str, object]:
+    """Print the invoice receipt to the ESC/POS printer (+ drawer pulse for cash).
+
+    Thermal printing requires the branch paper size to be 80mm (E-PRN-003
+    otherwise — the UI falls back to browser printing for A4/A5). The network
+    send runs in a worker thread so the event loop never blocks on the socket.
+    """
+    enforce_csrf(request)
+    receipt = await receipt_service.load_invoice_receipt(session, invoice_id)
+    if receipt.paper_size != receipt_service.THERMAL_PAPER:
+        raise ApiError(ErrorCode.PAPER_NOT_THERMAL, 409)
+
+    cfg = get_app_settings()
+    host = body.printer_host or cfg.printer_host
+    if not host:
+        raise ApiError(ErrorCode.PRINTER_NOT_CONFIGURED, 409)
+    port = body.printer_port or cfg.printer_port
+
+    open_drawer = (
+        body.open_drawer if body.open_drawer is not None else receipt.payment_method == "cash"
+    )
+    payload = receipt_service.to_escpos(receipt, open_drawer=open_drawer)
+    try:
+        await asyncio.to_thread(
+            send_raw, payload, host=host, port=port, timeout=cfg.printer_timeout_seconds
+        )
+    except OSError as exc:
+        raise ApiError(ErrorCode.PRINTER_UNREACHABLE, 503) from exc
+    return success_envelope({"printed": True, "drawer": open_drawer, "bytes": len(payload)})

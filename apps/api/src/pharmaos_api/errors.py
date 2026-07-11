@@ -26,6 +26,9 @@ class ErrorCode:
     ERECEIPT_REJECTED = "E-ETA-001"
     TT_REPORT_FAILED = "E-TT-001"
     SYNC_CONFLICT = "E-SYN-001"
+    PRINTER_NOT_CONFIGURED = "E-PRN-001"
+    PRINTER_UNREACHABLE = "E-PRN-002"
+    PAPER_NOT_THERMAL = "E-PRN-003"
 
 
 # Fallback messages in English (the neutral request-language fallback; the
@@ -44,6 +47,9 @@ _FALLBACK_MESSAGES: dict[str, str] = {
     ErrorCode.ERECEIPT_REJECTED: "E-receipt was rejected.",
     ErrorCode.TT_REPORT_FAILED: "Track & trace report failed.",
     ErrorCode.SYNC_CONFLICT: "Synchronization conflict.",
+    ErrorCode.PRINTER_NOT_CONFIGURED: "No receipt printer is configured on this device.",
+    ErrorCode.PRINTER_UNREACHABLE: "Could not reach the receipt printer.",
+    ErrorCode.PAPER_NOT_THERMAL: "Branch paper size is not 80mm thermal.",
 }
 
 

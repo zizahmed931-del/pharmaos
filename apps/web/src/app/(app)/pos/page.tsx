@@ -17,13 +17,16 @@ import { useEffect, useRef, useState } from 'react';
 import {
   ApiRequestError,
   createPosSale,
+  getInvoiceReceipt,
   getMedication,
+  type InvoiceReceipt,
   listInventoryBranches,
   type MedOption,
   posScan,
   type PosLevel,
   type PosSaleResult,
   type PosScan,
+  printInvoice,
   searchMedications,
 } from '@/lib/api';
 import { t } from '@/lib/i18n';
@@ -44,11 +47,15 @@ interface CartLine {
 }
 
 interface DoneInfo {
+  invoiceId: string;
   invoiceNumber: string;
   total: string;
   currency: string;
   change: string | null;
+  paymentMethod: 'cash' | 'card';
 }
+
+type PrintState = 'idle' | 'printing' | 'ok' | 'unconfigured' | 'paper' | 'failed';
 
 const lineTotal = (l: CartLine): number => {
   const q = Number(l.qty);
@@ -73,6 +80,8 @@ export default function PosPage() {
   const [searching, setSearching] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [done, setDone] = useState<DoneInfo | null>(null);
+  const [printState, setPrintState] = useState<PrintState>('idle');
+  const [receiptData, setReceiptData] = useState<InvoiceReceipt | null>(null);
 
   const branchesQuery = useQuery({ queryKey: ['inv-branches'], queryFn: listInventoryBranches });
   const branches = branchesQuery.data ?? [];
@@ -263,9 +272,65 @@ export default function PosPage() {
     setCart([]);
     setSel(0);
     setDone(null);
+    setPrintState('idle');
+    setReceiptData(null);
     setScanVal('');
     setResults(null);
     focusScan();
+  };
+
+  // ---------------- receipt printing (M9) ----------------
+
+  const thermalPrint = async (invoiceId: string, opts: { open_drawer?: boolean } = {}) => {
+    setPrintState('printing');
+    try {
+      await printInvoice(invoiceId, opts);
+      setPrintState('ok');
+    } catch (e) {
+      const code = errCode(e);
+      if (code === 'E-PRN-001') setPrintState('unconfigured');
+      else if (code === 'E-PRN-003') setPrintState('paper');
+      else {
+        setPrintState('failed');
+        toast.error(t(`errors.${code}`));
+      }
+    }
+  };
+
+  /** On completion: load the composed receipt once, then print the right way —
+   * thermal when the device is ready (drawer pulse decided server-side by
+   * payment method), otherwise surface the browser-print fallback. */
+  const startPrintFlow = async (info: DoneInfo) => {
+    try {
+      const receipt = await getInvoiceReceipt(info.invoiceId);
+      setReceiptData(receipt);
+      if (receipt.thermal_ready) {
+        await thermalPrint(info.invoiceId);
+      } else if (receipt.paper_size !== '80mm') {
+        setPrintState('paper');
+      } else {
+        setPrintState('unconfigured');
+      }
+    } catch (e) {
+      setPrintState('failed');
+      toast.error(t(`errors.${errCode(e)}`));
+    }
+  };
+
+  const browserPrint = async () => {
+    if (!done) return;
+    let data = receiptData;
+    if (!data) {
+      try {
+        data = await getInvoiceReceipt(done.invoiceId);
+        setReceiptData(data);
+      } catch (e) {
+        toast.error(t(`errors.${errCode(e)}`));
+        return;
+      }
+    }
+    // Let the hidden printable receipt render before opening the dialog.
+    setTimeout(() => window.print(), 80);
   };
 
   // ---------------- keyboard model (mouse-free flow) ----------------
@@ -273,9 +338,16 @@ export default function PosPage() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (done) {
+        // e.code = physical key — works the same under the Arabic layout.
         if (e.key === 'Enter') {
           e.preventDefault();
           newSale();
+        } else if (e.code === 'KeyP' && receiptData?.thermal_ready) {
+          e.preventDefault();
+          void thermalPrint(done.invoiceId, { open_drawer: false }); // reprint: keep drawer shut
+        } else if (e.code === 'KeyB') {
+          e.preventDefault();
+          void browserPrint();
         }
         return;
       }
@@ -556,6 +628,7 @@ export default function PosPage() {
           onDone={(info) => {
             setPayOpen(false);
             setDone(info);
+            void startPrintFlow(info);
           }}
         />
       )}
@@ -584,13 +657,138 @@ export default function PosPage() {
                 </span>
               </p>
             )}
-            <p className="mb-5 text-xs text-slate-400">{t('pos.print_note')}</p>
+
+            {/* Receipt print status (M9) */}
+            <p className="mb-4 min-h-5 text-sm">
+              {printState === 'printing' && (
+                <span className="text-slate-500">{t('pos.printing')}</span>
+              )}
+              {printState === 'ok' && <span className="text-success">✓ {t('pos.printed_ok')}</span>}
+              {printState === 'unconfigured' && (
+                <span className="text-slate-500">{t('pos.printer_missing')}</span>
+              )}
+              {printState === 'paper' && (
+                <span className="text-slate-500">{t('pos.paper_browser')}</span>
+              )}
+              {printState === 'failed' && (
+                <span className="text-danger">{t('pos.print_failed')}</span>
+              )}
+            </p>
+            <div className="mb-3 flex justify-center gap-2">
+              {receiptData?.thermal_ready && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={printState === 'printing'}
+                  onClick={() => void thermalPrint(done.invoiceId, { open_drawer: false })}
+                >
+                  {t('pos.reprint')}
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => void browserPrint()}>
+                {t('pos.print_browser')}
+              </Button>
+            </div>
             <Button size="lg" onClick={newSale}>
               {t('pos.new_sale')}
             </Button>
           </div>
         </div>
       )}
+
+      {receiptData && <PrintableReceipt receipt={receiptData} />}
+    </div>
+  );
+}
+
+// --------------------------- printable receipt (M9) ---------------------------
+
+/**
+ * Browser-print fallback: hidden on screen, the only visible element in print
+ * media (globals.css). Renders the SAME composed receipt the thermal path
+ * prints, so the two outputs cannot drift. The QR symbol is thermal-only.
+ */
+function PrintableReceipt({ receipt }: { receipt: InvoiceReceipt }) {
+  const width = receipt.paper_size === '80mm' ? 'max-w-[300px]' : 'max-w-[420px]';
+  return (
+    <div className={`receipt-print mx-auto ${width} bg-white p-4 text-center text-sm text-black`}>
+      <p className="text-lg font-extrabold">{receipt.pharmacy_name}</p>
+      <p>{receipt.branch_name}</p>
+      {receipt.address && <p>{receipt.address}</p>}
+      {receipt.phone && (
+        <p>
+          {t('receipt.phone')}: <span className="tabular-nums">{receipt.phone}</span>
+        </p>
+      )}
+      {receipt.license_number && (
+        <p>
+          {t('receipt.license')}: {receipt.license_number}
+        </p>
+      )}
+      {receipt.tax_registration_no && (
+        <p>
+          {t('receipt.tax_no')}: {receipt.tax_registration_no}
+        </p>
+      )}
+      <hr className="my-2 border-dashed border-black" />
+      <div className="flex justify-between text-xs">
+        <span>
+          {t('receipt.invoice')}: <span className="font-mono">{receipt.invoice_number}</span>
+        </span>
+        <span className="tabular-nums">{receipt.created_at_display}</span>
+      </div>
+      <hr className="my-2 border-dashed border-black" />
+      <table className="w-full text-xs">
+        <tbody>
+          {receipt.lines.map((line, i) => (
+            <tr key={i}>
+              <td className="py-0.5 text-start">
+                {line.name}
+                <span className="text-[10px] text-slate-600">
+                  {' '}
+                  ({Number(line.quantity)} × {line.unit_name})
+                </span>
+              </td>
+              <td className="py-0.5 text-end tabular-nums">{line.line_total}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <hr className="my-2 border-dashed border-black" />
+      <div className="space-y-0.5 text-xs">
+        <div className="flex justify-between">
+          <span>{t('receipt.subtotal')}</span>
+          <span className="tabular-nums">
+            {receipt.subtotal} {receipt.currency_symbol}
+          </span>
+        </div>
+        {Number(receipt.discount) > 0 && (
+          <div className="flex justify-between">
+            <span>{t('receipt.discount')}</span>
+            <span className="tabular-nums">
+              {receipt.discount} {receipt.currency_symbol}
+            </span>
+          </div>
+        )}
+        <div className="flex justify-between text-sm font-extrabold">
+          <span>{t('receipt.total')}</span>
+          <span className="tabular-nums">
+            {receipt.total} {receipt.currency_symbol}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span>{t('receipt.payment')}</span>
+          <span>{receipt.payment_method_display}</span>
+        </div>
+      </div>
+      {receipt.show_pharmacist_signature && (
+        <div className="mt-6">
+          <p>{'.'.repeat(24)}</p>
+          <p className="text-xs">{t('receipt.signature')}</p>
+        </div>
+      )}
+      <p className="mt-4">{receipt.thank_you_message}</p>
+      {receipt.return_policy && <p className="mt-1 text-[10px]">{receipt.return_policy}</p>}
     </div>
   );
 }
@@ -630,10 +828,12 @@ function PaymentModal({
       const change =
         method === 'cash' ? (Number(tendered) - Number(result.total)).toFixed(2) : null;
       onDone({
+        invoiceId: result.invoice_id,
         invoiceNumber: result.invoice_number,
         total: result.total,
         currency: result.currency_code,
         change,
+        paymentMethod: method,
       });
     },
     onError: (e) => toast.error(t(`errors.${errCode(e)}`)),
