@@ -88,8 +88,25 @@ is actually built/verified:
 | Supabase CLI | latest | absent | Installed on the build/verify machine (P0-M3). |
 | Package registries | reachable | egress restricted | Allowlist required before `pnpm install`. |
 
+## Python pins — resolved & verified on Python 3.12.13 / PostgreSQL 17.8 (2026-07)
+
+Installed, tested (24 tests green incl. live login + backup/restore drill), and pinned in
+`apps/api/pyproject.toml`: fastapi 0.139.0 · uvicorn 0.51.0 · sqlalchemy 2.0.51 ·
+asyncpg 0.31.0 · pydantic 2.13.4 · pydantic-settings 2.14.2 · argon2-cffi 25.1.0 ·
+PyJWT 2.13.0 · cryptography 49.0.0 · keyring 25.7.0 · celery 5.6.3 · redis 8.0.1 ·
+httpx 0.28.1 · pytest 9.1.1 · pytest-asyncio 1.4.0 · ruff 0.15.21 · black 26.5.1 · mypy 2.2.0.
+All satisfy the CLAUDE.md matrix (FastAPI ≥0.115 / Pydantic v2 / SQLAlchemy 2.0 async).
+
+## JS pins — status
+
+Frontend pins in package.json files reference EXISTING published versions
+(next 16.0.0 / react 19.0.0 / tailwindcss 4.0.0 / zustand 5.0.0 / @tanstack/react-query 5.59.0 ...).
+The "newest compatible" upgrade wave + lockfile generation happens at the first networked
+`pnpm install` (registry access was unavailable in the authoring environment) — record the
+resulting matrix here when it lands.
+
 ## Upgrade log
 
 - **2026-07 — Initial matrix (v1.1).** Adopted the CLAUDE.md v1.1 matrix as the project baseline.
-  Provisional toolchain pins committed in P0-M1; to be validated at the first networked
-  `pnpm install`.
+  Provisional JS toolchain pins committed in P0-M1 (validation gate: first networked install).
+  Python matrix resolved, installed and verified against PostgreSQL 17.8 in P0-M6..M9.

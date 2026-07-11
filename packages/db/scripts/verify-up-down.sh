@@ -57,4 +57,16 @@ for up in "${ups[@]}"; do
   "${PSQL[@]}" -1 -f "$up"
 done
 
+# Record applied versions so a subsequent apply-migrations.sh run composes
+# cleanly (skips re-application, applies seeds only).
+"${PSQL[@]}" -c "CREATE TABLE IF NOT EXISTS _pharmaos_migrations (
+  version     TEXT PRIMARY KEY,
+  applied_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);"
+for up in "${ups[@]}"; do
+  version="$(basename "$up" .sql)"
+  "${PSQL[@]}" -c "INSERT INTO _pharmaos_migrations(version) VALUES ('$version')
+                   ON CONFLICT (version) DO NOTHING;"
+done
+
 echo "OK: up/down/re-up verified for ${#ups[@]} migration(s)."
