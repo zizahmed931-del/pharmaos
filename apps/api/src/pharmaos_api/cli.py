@@ -169,9 +169,10 @@ async def _skeleton_demo_data() -> int:
         for name_ar in ("علبة", "شريط", "قرص"):
             row = (
                 await session.execute(
-                    sql_text("INSERT INTO units (name_ar) VALUES (:n) RETURNING id").bindparams(
-                        n=name_ar
-                    )
+                    sql_text(
+                        "INSERT INTO units (name_ar) VALUES (:n) "
+                        "ON CONFLICT (name_ar) DO UPDATE SET name_ar=EXCLUDED.name_ar RETURNING id"
+                    ).bindparams(n=name_ar)
                 )
             ).scalar_one()
             unit_ids[name_ar] = str(row)

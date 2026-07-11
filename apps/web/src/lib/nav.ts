@@ -19,7 +19,7 @@ export interface NavItem {
 export const NAV_ITEMS: readonly NavItem[] = [
   { href: '/', labelKey: 'nav.dashboard', permission: 'sales.view', ready: true },
   { href: '/pos', labelKey: 'nav.pos', permission: 'sales.create', ready: false },
-  { href: '/catalog', labelKey: 'nav.catalog', permission: 'inventory.view', ready: false },
+  { href: '/catalog', labelKey: 'nav.catalog', permission: 'inventory.view', ready: true },
   { href: '/inventory', labelKey: 'nav.inventory', permission: 'inventory.view', ready: false },
   { href: '/purchases', labelKey: 'nav.purchases', permission: 'purchases.view', ready: false },
   { href: '/customers', labelKey: 'nav.customers', permission: 'customers.view', ready: false },

@@ -22,6 +22,7 @@ class ErrorCode:
     CSRF_FAILED = "E-AUTH-004"
     RATE_LIMITED = "E-AUTH-005"
     USERNAME_TAKEN = "E-USR-001"
+    BARCODE_TAKEN = "E-CAT-001"
     ERECEIPT_REJECTED = "E-ETA-001"
     TT_REPORT_FAILED = "E-TT-001"
     SYNC_CONFLICT = "E-SYN-001"
@@ -39,6 +40,7 @@ _FALLBACK_MESSAGES: dict[str, str] = {
     ErrorCode.CSRF_FAILED: "CSRF verification failed.",
     ErrorCode.RATE_LIMITED: "Too many requests. Try again later.",
     ErrorCode.USERNAME_TAKEN: "Username is already taken.",
+    ErrorCode.BARCODE_TAKEN: "Barcode is already registered.",
     ErrorCode.ERECEIPT_REJECTED: "E-receipt was rejected.",
     ErrorCode.TT_REPORT_FAILED: "Track & trace report failed.",
     ErrorCode.SYNC_CONFLICT: "Synchronization conflict.",

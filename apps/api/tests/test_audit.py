@@ -97,7 +97,12 @@ async def _seed_saleable(db_session: AsyncSession) -> tuple[uuid.UUID, str]:
     branch = Branch(name=f"فرع {uuid.uuid4().hex[:6]}", country_code="EG", currency_code="EGP")
     db_session.add(branch)
     unit_id = (
-        await db_session.execute(text("INSERT INTO units (name_ar) VALUES ('قرص') RETURNING id"))
+        await db_session.execute(
+            text(
+                "INSERT INTO units (name_ar) VALUES ('قرص') "
+                "ON CONFLICT (name_ar) DO UPDATE SET name_ar=EXCLUDED.name_ar RETURNING id"
+            )
+        )
     ).scalar_one()
     med = Medication(trade_name=f"Med {uuid.uuid4().hex[:6]}", trade_name_ar="دواء")
     db_session.add(med)

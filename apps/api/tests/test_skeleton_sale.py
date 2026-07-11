@@ -61,7 +61,10 @@ async def _make_medication(
     for name_ar in ("علبة", "شريط", "قرص"):
         unit_ids[name_ar] = (
             await db_session.execute(
-                text("INSERT INTO units (name_ar) VALUES (:n) RETURNING id").bindparams(n=name_ar)
+                text(
+                    "INSERT INTO units (name_ar) VALUES (:n) "
+                    "ON CONFLICT (name_ar) DO UPDATE SET name_ar=EXCLUDED.name_ar RETURNING id"
+                ).bindparams(n=name_ar)
             )
         ).scalar_one()
 
