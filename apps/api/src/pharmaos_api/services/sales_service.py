@@ -22,6 +22,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pharmaos_api.audit import AuditAction
 from pharmaos_api.errors import ApiError, ErrorCode
 from pharmaos_api.models import (
     Branch,
@@ -34,6 +35,7 @@ from pharmaos_api.models import (
     StockMovement,
     User,
 )
+from pharmaos_api.services import audit_service
 
 
 @dataclass(frozen=True)
@@ -289,6 +291,23 @@ async def create_sale(
     session.add_all(pending_items)
     session.add_all(pending_movements)
 
-    await session.commit()  # ONE atomic unit: batches + movements + invoice + items
+    # Audit the sale IN THE SAME transaction (CLAUDE.md: audit from the first
+    # write). If the commit fails, the audit entry rolls back with the sale.
+    await audit_service.record(
+        session,
+        AuditAction.INVOICE_CREATED,
+        actor=cashier,
+        branch_id=branch_id,
+        entity_type="invoice",
+        entity_id=invoice.id,
+        metadata={
+            "invoice_number": invoice.invoice_number,
+            "total": str(invoice.total),
+            "currency_code": invoice.currency_code,
+            "line_count": len(pending_items),
+        },
+    )
+
+    await session.commit()  # ONE atomic unit: batches + movements + invoice + items + audit
     await session.refresh(invoice)
     return invoice
