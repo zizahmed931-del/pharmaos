@@ -15,7 +15,7 @@ Inventory rules enforced here (CLAUDE.md):
 
 import datetime as dt
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.audit import AuditAction
 from pharmaos_api.errors import ApiError, ErrorCode
+from pharmaos_api.gs1 import Gs1ParseError, parse_gs1
 from pharmaos_api.models import (
     Branch,
     Invoice,
@@ -35,7 +36,7 @@ from pharmaos_api.models import (
     StockMovement,
     User,
 )
-from pharmaos_api.services import audit_service
+from pharmaos_api.services import audit_service, catalog_service
 
 
 @dataclass(frozen=True)
@@ -48,12 +49,38 @@ class ScanResult:
     level: int
     selling_price: Decimal
     requires_prescription: bool
+    controlled_substance: bool
 
 
 @dataclass(frozen=True)
 class SaleLine:
-    barcode: str
-    quantity: Decimal  # at the scanned/sold packaging level
+    """One cart line (M8 POS).
+
+    Identification — one of:
+    - barcode only: the scanned/default packaging level (skeleton behavior);
+    - barcode + packaging_id: POS unit switching — the cashier scanned the pack
+      but sells a different level (box/strip/tablet) of the SAME medication;
+    - medication_id + packaging_id: name-search line (no barcode on hand).
+    """
+
+    quantity: Decimal  # at the sold packaging level
+    barcode: str | None = None
+    medication_id: uuid.UUID | None = None
+    packaging_id: uuid.UUID | None = None
+
+
+def _scan_result(medication: Medication, packaging: MedicationPackaging) -> ScanResult:
+    return ScanResult(
+        medication_id=medication.id,
+        trade_name=medication.trade_name,
+        trade_name_ar=medication.trade_name_ar,
+        packaging_id=packaging.id,
+        packaging_name_ar=packaging.name_ar,
+        level=packaging.level,
+        selling_price=packaging.selling_price,
+        requires_prescription=medication.requires_prescription,
+        controlled_substance=medication.controlled_substance,
+    )
 
 
 async def resolve_barcode(session: AsyncSession, barcode: str) -> ScanResult:
@@ -74,16 +101,84 @@ async def resolve_barcode(session: AsyncSession, barcode: str) -> ScanResult:
     barcode_row, medication = row
 
     packaging = await _resolve_sale_packaging(session, medication.id, barcode_row.packaging_id)
-    return ScanResult(
-        medication_id=medication.id,
-        trade_name=medication.trade_name,
-        trade_name_ar=medication.trade_name_ar,
-        packaging_id=packaging.id,
-        packaging_name_ar=packaging.name_ar,
-        level=packaging.level,
-        selling_price=packaging.selling_price,
-        requires_prescription=medication.requires_prescription,
-    )
+    return _scan_result(medication, packaging)
+
+
+async def resolve_scan_code(session: AsyncSession, code: str) -> ScanResult:
+    """POS scan entry point: exact barcode first (fast path), then a GS1
+    DataMatrix fallback — Egyptian packs carry 2D codes (EDA track & trace),
+    so a POS scanner may hand us a full GS1 element string instead of an EAN13.
+    The embedded GTIN resolves via medications.gtin or a stored barcode."""
+    try:
+        return await resolve_barcode(session, code)
+    except ApiError as unknown_barcode:
+        try:
+            pack = parse_gs1(code)
+        except Gs1ParseError:
+            raise unknown_barcode from None
+        if pack.gtin is None:
+            raise unknown_barcode from None
+        medication = await catalog_service.find_by_gtin(session, pack.gtin)
+        if medication is None or not medication.is_active:
+            raise unknown_barcode from None
+        packaging = await _resolve_sale_packaging(session, medication.id, None)
+        return _scan_result(medication, packaging)
+
+
+async def _get_sellable_packaging_of(
+    session: AsyncSession, medication_id: uuid.UUID, packaging_id: uuid.UUID
+) -> MedicationPackaging:
+    """A packaging override is only valid for the SAME medication and must be
+    sellable — a foreign or retired level would silently sell the wrong item."""
+    packaging = await session.get(MedicationPackaging, packaging_id)
+    if (
+        packaging is None
+        or packaging.is_deleted
+        or packaging.medication_id != medication_id
+        or not packaging.is_sellable
+    ):
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED,
+            422,
+            message="Packaging level does not belong to this medication or is not sellable.",
+        )
+    return packaging
+
+
+async def _resolve_line(session: AsyncSession, line: SaleLine) -> ScanResult:
+    """Resolve a SaleLine to its medication + sold packaging level (see SaleLine)."""
+    if line.barcode:
+        scan = await resolve_barcode(session, line.barcode)
+        if line.packaging_id is None or line.packaging_id == scan.packaging_id:
+            return scan
+        packaging = await _get_sellable_packaging_of(session, scan.medication_id, line.packaging_id)
+        return replace(
+            scan,
+            packaging_id=packaging.id,
+            packaging_name_ar=packaging.name_ar,
+            level=packaging.level,
+            selling_price=packaging.selling_price,
+        )
+
+    if line.medication_id is None or line.packaging_id is None:
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED,
+            422,
+            message="Sale line needs a barcode or medication_id + packaging_id.",
+        )
+    medication = (
+        await session.execute(
+            select(Medication).where(
+                Medication.id == line.medication_id,
+                Medication.is_deleted.is_(False),
+                Medication.is_active.is_(True),
+            )
+        )
+    ).scalar_one_or_none()
+    if medication is None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Unknown medication.")
+    packaging = await _get_sellable_packaging_of(session, medication.id, line.packaging_id)
+    return _scan_result(medication, packaging)
 
 
 async def _resolve_sale_packaging(
@@ -184,7 +279,7 @@ async def create_sale(
     for line in lines:
         if line.quantity <= 0:
             raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Quantity must be positive.")
-        scan = await resolve_barcode(session, line.barcode)
+        scan = await _resolve_line(session, line)
         factor = await _smallest_unit_factor(session, scan.medication_id, scan.level)
         needed = (line.quantity * factor).quantize(Decimal("0.001"))
 

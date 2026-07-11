@@ -413,3 +413,66 @@ export interface MedOption {
 export function searchMedications(term: string) {
   return apiFetch<MedOption[]>(`/api/v1/medications?limit=10&search=${encodeURIComponent(term)}`);
 }
+
+// ---- POS (P1-M8): scan, unit switching, sale ----
+
+export interface PosLevel {
+  id: string;
+  level: number;
+  name_ar: string;
+  selling_price: string;
+  is_default_sale: boolean;
+}
+
+export interface PosScan {
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  packaging_id: string;
+  packaging_name_ar: string;
+  level: number;
+  selling_price: string;
+  requires_prescription: boolean;
+  controlled_substance: boolean;
+  levels: PosLevel[];
+}
+
+/** Exact barcode or full GS1 DataMatrix element string (Egyptian 2D codes). */
+export function posScan(code: string) {
+  return apiFetch<PosScan>(`/api/v1/pos/scan?barcode=${encodeURIComponent(code)}`);
+}
+
+export interface PosSaleLine {
+  medication_id: string;
+  packaging_id: string;
+  quantity: string;
+}
+
+export interface PosSaleItem {
+  medication_id: string;
+  batch_id: string;
+  quantity: string;
+  qty_smallest: string;
+  line_total: string;
+}
+
+export interface PosSaleResult {
+  invoice_id: string;
+  invoice_number: string;
+  currency_code: string;
+  subtotal: string;
+  total: string;
+  payment_method: string;
+  items: PosSaleItem[];
+}
+
+export function createPosSale(input: {
+  branch_id: string;
+  lines: PosSaleLine[];
+  payment_method: 'cash' | 'card';
+}) {
+  return apiFetch<PosSaleResult>('/api/v1/pos/sale', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
