@@ -54,26 +54,18 @@ def sync_test_db_url() -> str:
     return os.environ["DATABASE_URL"]
 
 
-async def test_full_matrix_matches_code(
-    db_session: AsyncSession, sync_test_db_url: str
-) -> None:
+async def test_full_matrix_matches_code(db_session: AsyncSession, sync_test_db_url: str) -> None:
     _apply_seed(sync_test_db_url)
     expected = _expected_matrix()
     assert len(expected) == 94  # 6 roles / 36 permissions / 94 grants
 
-    rows = (
-        await db_session.execute(
-            text(
-                """
+    rows = (await db_session.execute(text("""
                 SELECT r.code, p.code
                 FROM role_permissions rp
                 JOIN roles r ON r.id = rp.role_id
                 JOIN permissions p ON p.id = rp.permission_id
                 WHERE NOT rp.is_deleted AND r.is_system
-                """
-            )
-        )
-    ).all()
+                """))).all()
     actual = {(role, perm) for role, perm in rows}
     assert actual == expected
 
@@ -82,18 +74,12 @@ async def test_super_admin_has_every_permission(
     db_session: AsyncSession, sync_test_db_url: str
 ) -> None:
     _apply_seed(sync_test_db_url)
-    count = (
-        await db_session.execute(
-            text(
-                """
+    count = (await db_session.execute(text("""
                 SELECT COUNT(*)
                 FROM role_permissions rp
                 JOIN roles r ON r.id = rp.role_id
                 WHERE r.code = 'super_admin' AND NOT rp.is_deleted
-                """
-            )
-        )
-    ).scalar_one()
+                """))).scalar_one()
     total = (
         await db_session.execute(text("SELECT COUNT(*) FROM permissions WHERE NOT is_deleted"))
     ).scalar_one()
@@ -105,31 +91,21 @@ async def test_code_wins_over_manual_db_edit(
 ) -> None:
     """Manually granting 'settings.edit' to viewer must be reverted by the seed."""
     _apply_seed(sync_test_db_url)
-    await db_session.execute(
-        text(
-            """
+    await db_session.execute(text("""
             INSERT INTO role_permissions (role_id, permission_id)
             SELECT r.id, p.id FROM roles r, permissions p
             WHERE r.code = 'viewer' AND p.code = 'settings.edit'
             ON CONFLICT (role_id, permission_id) DO UPDATE SET is_deleted = FALSE
-            """
-        )
-    )
+            """))
     await db_session.commit()
 
     _apply_seed(sync_test_db_url)
-    granted = (
-        await db_session.execute(
-            text(
-                """
+    granted = (await db_session.execute(text("""
                 SELECT COUNT(*) FROM role_permissions rp
                 JOIN roles r ON r.id = rp.role_id
                 JOIN permissions p ON p.id = rp.permission_id
                 WHERE r.code = 'viewer' AND p.code = 'settings.edit' AND NOT rp.is_deleted
-                """
-            )
-        )
-    ).scalar_one()
+                """))).scalar_one()
     assert granted == 0  # soft-deleted by the seeder (code wins; never hard-deleted)
 
 
@@ -139,9 +115,7 @@ async def _login_as_role(
     from pharmaos_api.models import Role, User
     from pharmaos_api.security.passwords import hash_password
 
-    role = (
-        await db_session.execute(select(Role).where(Role.code == role_code))
-    ).scalar_one()
+    role = (await db_session.execute(select(Role).where(Role.code == role_code))).scalar_one()
     username = f"{role_code}_{uuid.uuid4().hex[:8]}"
     db_session.add(
         User(
@@ -158,9 +132,7 @@ async def _login_as_role(
     assert r.status_code == 200
 
 
-async def test_require_permission_guard(
-    db_session: AsyncSession, sync_test_db_url: str
-) -> None:
+async def test_require_permission_guard(db_session: AsyncSession, sync_test_db_url: str) -> None:
     """Endpoint guarded with settings.edit: super_admin allowed, cashier denied (E-AUTH-002)."""
     from pharmaos_api.deps import require_permission
     from pharmaos_api.main import create_app
