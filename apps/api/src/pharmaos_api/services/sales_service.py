@@ -256,6 +256,10 @@ async def create_sale(
                     created_by=cashier.id,
                 )
             )
+            # Derived cache maintained in the SAME transaction (CLAUDE.md).
+            from pharmaos_api.services.inventory_service import apply_cache_delta
+
+            await apply_cache_delta(session, branch_id, scan.medication_id, -slice_qty)
 
     total = subtotal  # discount 0 / tax 0 in the skeleton (tax profiles: Phase 2)
 
