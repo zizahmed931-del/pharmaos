@@ -20,25 +20,24 @@ os.environ["DATABASE_URL"] = _TEST_DB
 os.environ.setdefault("LOGIN_RATE_LIMIT_PER_MINUTE", "1000")
 
 
-@pytest.fixture(autouse=True)
-def _isolated_keystore(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Point the dev-store fallback at a temp dir; force fallback (no OS keyring in CI)."""
+@pytest.fixture(scope="session", autouse=True)
+def _isolated_keystore(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Point the dev-store fallback at ONE temp dir for the whole session and force
+    the fallback (no OS keyring in CI). Session scope keeps the encryption key
+    STABLE across tests — mirroring the real OS keystore, where a value encrypted
+    by one operation is decryptable by another (a per-test key would not be)."""
     from pathlib import Path
 
     from pharmaos_api.security import keystore
 
-    monkeypatch.setattr(keystore, "_DEV_STORE_DIR", Path(str(tmp_path)) / "devkeys")
-    monkeypatch.setattr(
-        keystore.keyring,
-        "get_password",
-        lambda *_a, **_k: (_ for _ in ()).throw(keystore.KeyringError("no backend")),
-    )
-    monkeypatch.setattr(
-        keystore.keyring,
-        "set_password",
-        lambda *_a, **_k: (_ for _ in ()).throw(keystore.KeyringError("no backend")),
-    )
-    yield
+    def _no_backend(*_a: object, **_k: object) -> None:
+        raise keystore.KeyringError("no backend")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(keystore, "_DEV_STORE_DIR", Path(tmp_path_factory.mktemp("devkeys")))
+        mp.setattr(keystore.keyring, "get_password", _no_backend)
+        mp.setattr(keystore.keyring, "set_password", _no_backend)
+        yield
 
 
 @pytest.fixture

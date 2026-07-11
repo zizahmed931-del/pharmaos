@@ -59,3 +59,55 @@ export function fetchMe() {
 export function logout() {
   return apiFetch<{ logged_out: boolean }>('/api/v1/auth/logout', { method: 'POST' });
 }
+
+// ---- User & role management (P1-M3; super_admin only) ----
+
+export interface ManagedUser {
+  id: string;
+  username: string;
+  full_name: string;
+  role: string | null;
+  phone: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface CreateUserInput {
+  username: string;
+  full_name: string;
+  password: string;
+  role_code: string;
+  phone?: string | null;
+}
+
+export function listUsers() {
+  return apiFetch<ManagedUser[]>('/api/v1/users?limit=100');
+}
+
+export function createUser(input: CreateUserInput) {
+  return apiFetch<ManagedUser>('/api/v1/users', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function changeUserRole(id: string, roleCode: string) {
+  return apiFetch<ManagedUser>(`/api/v1/users/${id}/role`, {
+    method: 'POST',
+    body: JSON.stringify({ role_code: roleCode }),
+  });
+}
+
+export function setUserActive(id: string, active: boolean) {
+  return apiFetch<ManagedUser>(`/api/v1/users/${id}/active`, {
+    method: 'POST',
+    body: JSON.stringify({ active }),
+  });
+}
+
+export function resetUserPassword(id: string, newPassword: string) {
+  return apiFetch<{ reset: boolean }>(`/api/v1/users/${id}/reset-password`, {
+    method: 'POST',
+    body: JSON.stringify({ new_password: newPassword }),
+  });
+}
