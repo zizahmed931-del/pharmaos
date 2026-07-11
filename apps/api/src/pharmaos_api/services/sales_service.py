@@ -36,7 +36,7 @@ from pharmaos_api.models import (
     StockMovement,
     User,
 )
-from pharmaos_api.services import audit_service, catalog_service
+from pharmaos_api.services import audit_service, cashier_service, catalog_service
 
 
 @dataclass(frozen=True)
@@ -258,8 +258,15 @@ async def create_sale(
     lines: list[SaleLine],
     cashier: User,
     payment_method: str = "cash",
+    tendered: Decimal | None = None,
 ) -> Invoice:
-    """Create a completed sale invoice in ONE transaction (see module docstring)."""
+    """Create a completed sale invoice in ONE transaction (see module docstring).
+
+    M10: the invoice links to the seller's OPEN cash session when one exists
+    (sales without a session stay legal — a pharmacist holds sales.create but
+    not cashier.open_session). `tendered` persists the customer cash math
+    (cash only; change = tendered − total).
+    """
     if not lines:
         raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Empty sale.")
 
@@ -358,6 +365,24 @@ async def create_sale(
 
     total = subtotal  # discount 0 / tax 0 in the skeleton (tax profiles: Phase 2)
 
+    # M10 — customer cash carry-through (validated against the AUTHORITATIVE total).
+    tendered_amount: Decimal | None = None
+    change_amount: Decimal | None = None
+    if tendered is not None:
+        if payment_method != "cash":
+            raise ApiError(
+                ErrorCode.VALIDATION_FAILED, 422, message="Tendered applies to cash sales only."
+            )
+        tendered_amount = tendered.quantize(Decimal("0.01"))
+        if tendered_amount < total:
+            raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Tendered is below the total.")
+        change_amount = (tendered_amount - total).quantize(Decimal("0.01"))
+
+    # M10 — attach the seller's open drawer session (if any) for the Z-report.
+    open_session = await cashier_service.get_open_session(
+        session, branch_id=branch_id, cashier_id=cashier.id
+    )
+
     invoice = Invoice(
         branch_id=branch_id,
         invoice_number=await _next_invoice_number(session, branch_id),
@@ -369,6 +394,9 @@ async def create_sale(
         tax_amount=Decimal("0.00"),
         total=total,
         payment_method=payment_method,
+        cash_session_id=open_session.id if open_session is not None else None,
+        tendered_amount=tendered_amount,
+        change_amount=change_amount,
         created_by=cashier.id,
     )
     session.add(invoice)

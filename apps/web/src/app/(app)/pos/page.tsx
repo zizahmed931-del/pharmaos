@@ -823,10 +823,15 @@ function PaymentModal({
           quantity: String(Number(l.qty)),
         })),
         payment_method: method,
+        // M10 — persist the customer cash math on the invoice (cash only).
+        ...(method === 'cash' && tendered ? { tendered: String(Number(tendered)) } : {}),
       }),
     onSuccess: (result: PosSaleResult) => {
+      // Server change_amount is authoritative (M10); fall back to local math.
       const change =
-        method === 'cash' ? (Number(tendered) - Number(result.total)).toFixed(2) : null;
+        method === 'cash'
+          ? (result.change_amount ?? (Number(tendered) - Number(result.total)).toFixed(2))
+          : null;
       onDone({
         invoiceId: result.invoice_id,
         invoiceNumber: result.invoice_number,

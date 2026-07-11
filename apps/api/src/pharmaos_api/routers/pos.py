@@ -84,6 +84,8 @@ class SaleIn(BaseModel):
     branch_id: uuid.UUID
     lines: list[SaleLineIn] = Field(min_length=1, max_length=200)
     payment_method: str = Field(default="cash", pattern="^(cash|card)$")
+    # M10 — cash received from the customer (change persists on the invoice).
+    tendered: Decimal | None = Field(default=None, ge=0, le=Decimal("10000000"))
 
 
 @router.post("/sale")
@@ -110,6 +112,7 @@ async def create_sale(
         ],
         cashier=current_user,
         payment_method=body.payment_method,
+        tendered=body.tendered,
     )
     items = (
         (await session.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)))
@@ -124,6 +127,15 @@ async def create_sale(
             "subtotal": str(invoice.subtotal),
             "total": str(invoice.total),
             "payment_method": invoice.payment_method,
+            "tendered_amount": (
+                str(invoice.tendered_amount) if invoice.tendered_amount is not None else None
+            ),
+            "change_amount": (
+                str(invoice.change_amount) if invoice.change_amount is not None else None
+            ),
+            "cash_session_id": (
+                str(invoice.cash_session_id) if invoice.cash_session_id is not None else None
+            ),
             "items": [
                 {
                     "medication_id": str(item.medication_id),

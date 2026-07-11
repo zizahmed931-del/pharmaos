@@ -9,7 +9,13 @@ from pharmaos_api.models.catalog import (
     MedicationPackaging,
     MedicationPriceHistory,
 )
-from pharmaos_api.models.operations import Invoice, InvoiceItem, MedicationBatch, StockMovement
+from pharmaos_api.models.operations import (
+    CashSession,
+    Invoice,
+    InvoiceItem,
+    MedicationBatch,
+    StockMovement,
+)
 from pharmaos_api.models.rbac import Permission, Role, RolePermission
 from pharmaos_api.models.reference import Country, Currency
 from pharmaos_api.models.settings import Settings
@@ -19,6 +25,7 @@ __all__ = [
     "AuditLog",
     "Base",
     "Branch",
+    "CashSession",
     "Country",
     "Currency",
     "Invoice",

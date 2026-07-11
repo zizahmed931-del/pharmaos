@@ -463,6 +463,9 @@ export interface PosSaleResult {
   subtotal: string;
   total: string;
   payment_method: string;
+  tendered_amount: string | null;
+  change_amount: string | null;
+  cash_session_id: string | null;
   items: PosSaleItem[];
 }
 
@@ -470,11 +473,89 @@ export function createPosSale(input: {
   branch_id: string;
   lines: PosSaleLine[];
   payment_method: 'cash' | 'card';
+  tendered?: string;
 }) {
   return apiFetch<PosSaleResult>('/api/v1/pos/sale', {
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+// ---- Cash sessions (P1-M10) ----
+
+export interface CashSessionInfo {
+  id: string;
+  branch_id: string;
+  cashier_id: string;
+  status: string;
+  opening_float: string;
+  opened_at: string;
+  closed_at: string | null;
+  expected_cash: string | null;
+  counted_cash: string | null;
+  discrepancy: string | null;
+  closing_notes: string | null;
+}
+
+export interface CashSessionSummary {
+  cash_count: number;
+  cash_total: string;
+  card_count: number;
+  card_total: string;
+  tendered_total: string;
+  change_total: string;
+  expected_cash: string;
+}
+
+export interface CashSessionRow {
+  id: string;
+  status: string;
+  opening_float: string;
+  opened_at: string;
+  closed_at: string | null;
+  expected_cash: string | null;
+  counted_cash: string | null;
+  discrepancy: string | null;
+  closing_notes: string | null;
+  cashier_username: string;
+  cashier_full_name: string;
+}
+
+export interface DayZReport {
+  date: string;
+  sessions: CashSessionRow[];
+  cash_in_session: { count: number; total: string };
+  card_in_session: { count: number; total: string };
+  cash_outside_sessions: { count: number; total: string };
+  card_outside_sessions: { count: number; total: string };
+  invoice_count: number;
+  total_sales: string;
+}
+
+export function openCashSession(branchId: string, openingFloat: string) {
+  return apiFetch<CashSessionInfo>('/api/v1/cashier/sessions/open', {
+    method: 'POST',
+    body: JSON.stringify({ branch_id: branchId, opening_float: openingFloat }),
+  });
+}
+
+export function getCurrentCashSession(branchId: string) {
+  return apiFetch<{ session: CashSessionInfo | null; summary: CashSessionSummary | null }>(
+    `/api/v1/cashier/sessions/current?branch_id=${branchId}`,
+  );
+}
+
+export function closeCashSession(sessionId: string, countedCash: string, notes?: string) {
+  return apiFetch<CashSessionInfo>(`/api/v1/cashier/sessions/${sessionId}/close`, {
+    method: 'POST',
+    body: JSON.stringify({ counted_cash: countedCash, notes: notes || null }),
+  });
+}
+
+export function getZReport(branchId: string, day?: string) {
+  const params = new URLSearchParams({ branch_id: branchId });
+  if (day) params.set('day', day);
+  return apiFetch<DayZReport>(`/api/v1/cashier/z-report?${params.toString()}`);
 }
 
 // ---- Receipt printing (P1-M9) ----

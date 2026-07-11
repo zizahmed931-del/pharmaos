@@ -1,0 +1,416 @@
+"""Cash sessions (P1-M10): open/close lifecycle with the audit trail
+(cash_session.opened/closed/discrepancy), sale linkage + tendered/change
+persistence, drawer math (expected = float + cash totals), the day Z-report
+buckets, and the HTTP layer with the cashier permission tiers."""
+
+import datetime as dt
+import uuid
+from decimal import Decimal
+
+import httpx
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from pharmaos_api.errors import ApiError
+from pharmaos_api.models import (
+    Branch,
+    Medication,
+    MedicationBarcode,
+    MedicationBatch,
+    MedicationPackaging,
+    Role,
+    User,
+)
+from pharmaos_api.services import cashier_service, sales_service
+from pharmaos_api.services.sales_service import SaleLine
+
+
+@pytest.fixture
+async def actor(db_session: AsyncSession, seeded_user: dict) -> User:
+    return (
+        await db_session.execute(select(User).where(User.username == seeded_user["username"]))
+    ).scalar_one()
+
+
+@pytest.fixture
+async def branch(db_session: AsyncSession) -> Branch:
+    b = Branch(name=f"فرع {uuid.uuid4().hex[:6]}", country_code="EG", currency_code="EGP")
+    db_session.add(b)
+    await db_session.commit()
+    return b
+
+
+async def _make_med(db_session: AsyncSession, branch_id: uuid.UUID, tablets: int = 500) -> str:
+    """Strip-barcode med at 30.00/strip (10 tablets); stocked with one batch."""
+    unit_id = (
+        await db_session.execute(
+            text(
+                "INSERT INTO units (name_ar) VALUES ('شريط') "
+                "ON CONFLICT (name_ar) DO UPDATE SET name_ar=EXCLUDED.name_ar RETURNING id"
+            )
+        )
+    ).scalar_one()
+    await db_session.commit()
+    med = Medication(trade_name=f"CshMed {uuid.uuid4().hex[:6]}", trade_name_ar="دواء الكاشير")
+    db_session.add(med)
+    await db_session.flush()
+    strip = MedicationPackaging(
+        medication_id=med.id,
+        level=2,
+        unit_id=unit_id,
+        name_ar="شريط",
+        qty_in_parent=Decimal(10),
+        selling_price=Decimal("30.00"),
+        is_default_sale=True,
+    )
+    db_session.add(strip)
+    await db_session.flush()
+    barcode = f"622{uuid.uuid4().int % 10**10:010d}"
+    db_session.add(MedicationBarcode(medication_id=med.id, packaging_id=strip.id, barcode=barcode))
+    db_session.add(
+        MedicationBatch(
+            branch_id=branch_id,
+            medication_id=med.id,
+            batch_number=f"CSH-{uuid.uuid4().hex[:8]}",
+            expiry_date=dt.date.today() + dt.timedelta(days=365),
+            quantity=Decimal(tablets),
+            purchase_price=Decimal("2.00"),
+        )
+    )
+    await db_session.commit()
+    return barcode
+
+
+async def _audit_count(db_session: AsyncSession, action: str, entity_id: uuid.UUID) -> int:
+    return int(
+        (
+            await db_session.execute(
+                text(
+                    "SELECT COUNT(*) FROM audit_logs WHERE action = :a AND entity_id = :e"
+                ).bindparams(a=action, e=entity_id)
+            )
+        ).scalar_one()
+    )
+
+
+# ------------------------------ lifecycle ------------------------------
+
+
+async def test_open_session_audits_and_blocks_duplicates(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    row = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("200.00")
+    )
+    assert row.status == "open" and row.opening_float == Decimal("200.00")
+    assert await _audit_count(db_session, "cash_session.opened", row.id) == 1
+
+    with pytest.raises(ApiError) as exc:
+        await cashier_service.open_session(
+            db_session, actor=actor, branch_id=branch.id, opening_float=Decimal(0)
+        )
+    assert exc.value.code == "E-CSH-001" and exc.value.http_status == 409
+
+    # A different branch is a different drawer — allowed.
+    other = Branch(name=f"فرع {uuid.uuid4().hex[:6]}", country_code="EG", currency_code="EGP")
+    db_session.add(other)
+    await db_session.commit()
+    second = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=other.id, opening_float=Decimal(0)
+    )
+    assert second.branch_id == other.id
+
+
+async def test_sale_links_session_and_persists_tendered_change(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("100.00")
+    )
+    barcode = await _make_med(db_session, branch.id)
+
+    # Cash sale: 2 strips = 60.00, customer pays 100 -> change 40.
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],
+        cashier=actor,
+        tendered=Decimal("100.00"),
+    )
+    assert invoice.cash_session_id == cash_session.id
+    assert invoice.tendered_amount == Decimal("100.00")
+    assert invoice.change_amount == Decimal("40.00")
+
+    # Card sale: linked to the session, no tendered/change.
+    card = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+        cashier=actor,
+        payment_method="card",
+    )
+    assert card.cash_session_id == cash_session.id
+    assert card.tendered_amount is None and card.change_amount is None
+
+    summary = await cashier_service.session_summary(db_session, cash_session)
+    assert summary["cash_count"] == 1 and summary["cash_total"] == "60.00"
+    assert summary["card_count"] == 1 and summary["card_total"] == "30.00"
+    assert summary["tendered_total"] == "100.00" and summary["change_total"] == "40.00"
+    assert summary["expected_cash"] == "160.00"  # 100 float + 60 cash
+
+
+async def test_sale_without_session_and_tendered_validation(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    bid = branch.id
+    barcode = await _make_med(db_session, bid)
+
+    # No open session -> the sale still completes, unlinked (pharmacist flow).
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=bid,
+        lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+        cashier=actor,
+    )
+    assert invoice.cash_session_id is None
+
+    # Tendered below the AUTHORITATIVE total -> 422, nothing persisted.
+    with pytest.raises(ApiError):
+        await sales_service.create_sale(
+            db_session,
+            branch_id=bid,
+            lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],
+            cashier=actor,
+            tendered=Decimal("10.00"),
+        )
+    await db_session.rollback()
+    await db_session.refresh(actor)
+
+    # Tendered on a card sale -> 422.
+    with pytest.raises(ApiError):
+        await sales_service.create_sale(
+            db_session,
+            branch_id=bid,
+            lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+            cashier=actor,
+            payment_method="card",
+            tendered=Decimal("100.00"),
+        )
+    await db_session.rollback()
+
+
+async def test_close_freezes_z_numbers_and_audits_discrepancy(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("50.00")
+    )
+    barcode = await _make_med(db_session, branch.id)
+    await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(3), barcode=barcode)],  # 90.00 cash
+        cashier=actor,
+        tendered=Decimal("100.00"),
+    )
+
+    # Counted 135 vs expected 140 -> discrepancy -5, audited independently.
+    closed = await cashier_service.close_session(
+        db_session,
+        actor=actor,
+        cash_session=cash_session,
+        counted_cash=Decimal("135.00"),
+        notes="عجز ٥ جنيهات",
+    )
+    assert closed.status == "closed"
+    assert closed.expected_cash == Decimal("140.00")
+    assert closed.counted_cash == Decimal("135.00")
+    assert closed.discrepancy == Decimal("-5.00")
+    assert closed.closing_notes == "عجز ٥ جنيهات"
+    assert closed.closed_at is not None and closed.closed_by == actor.id
+    assert await _audit_count(db_session, "cash_session.closed", closed.id) == 1
+    assert await _audit_count(db_session, "cash_session.discrepancy", closed.id) == 1
+
+    # Closing again -> E-CSH-002.
+    with pytest.raises(ApiError) as exc:
+        await cashier_service.close_session(
+            db_session, actor=actor, cash_session=closed, counted_cash=Decimal(0)
+        )
+    assert exc.value.code == "E-CSH-002"
+    await db_session.rollback()
+
+
+async def test_close_balanced_drawer_has_no_discrepancy_audit(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("20.00")
+    )
+    closed = await cashier_service.close_session(
+        db_session, actor=actor, cash_session=cash_session, counted_cash=Decimal("20.00")
+    )
+    assert closed.discrepancy == Decimal("0.00")
+    assert await _audit_count(db_session, "cash_session.closed", closed.id) == 1
+    assert await _audit_count(db_session, "cash_session.discrepancy", closed.id) == 0
+
+
+async def test_day_report_buckets(db_session: AsyncSession, actor: User, branch: Branch) -> None:
+    bid = branch.id
+    barcode = await _make_med(db_session, bid)
+
+    # Outside any session first (30.00 cash).
+    await sales_service.create_sale(
+        db_session,
+        branch_id=bid,
+        lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+        cashier=actor,
+    )
+    # Then in-session: 60 cash + 30 card.
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=bid, opening_float=Decimal(0)
+    )
+    await sales_service.create_sale(
+        db_session,
+        branch_id=bid,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],
+        cashier=actor,
+        tendered=Decimal("60.00"),
+    )
+    await sales_service.create_sale(
+        db_session,
+        branch_id=bid,
+        lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+        cashier=actor,
+        payment_method="card",
+    )
+
+    report = await cashier_service.day_report(db_session, branch_id=bid, day=dt.date.today())
+    assert report["cash_in_session"] == {"count": 1, "total": "60.00"}
+    assert report["card_in_session"] == {"count": 1, "total": "30.00"}
+    assert report["cash_outside_sessions"] == {"count": 1, "total": "30.00"}
+    assert report["invoice_count"] == 3
+    assert report["total_sales"] == "120.00"
+    sessions = report["sessions"]
+    assert isinstance(sessions, list) and len(sessions) == 1
+    assert sessions[0]["id"] == str(cash_session.id)
+
+
+# ------------------------------ HTTP layer ------------------------------
+
+
+async def _seed_role_user(db_session: AsyncSession, role_code: str) -> str:
+    from pharmaos_api.security.passwords import hash_password
+
+    role = (await db_session.execute(select(Role).where(Role.code == role_code))).scalar_one()
+    username = f"{role_code}_{uuid.uuid4().hex[:8]}"
+    db_session.add(
+        User(
+            username=username,
+            full_name=f"م {role_code}",
+            password_hash=hash_password("T3st@user!"),
+            role_id=role.id,
+        )
+    )
+    await db_session.commit()
+    return username
+
+
+async def _login(client: httpx.AsyncClient, username: str) -> str:
+    r = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": "T3st@user!"}
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["csrf_token"]
+
+
+async def test_cashier_opens_and_reads_current_session(
+    client: httpx.AsyncClient, db_session: AsyncSession, branch: Branch
+) -> None:
+    csrf = await _login(client, await _seed_role_user(db_session, "cashier"))
+    opened = await client.post(
+        "/api/v1/cashier/sessions/open",
+        headers={"X-CSRF-Token": csrf},
+        json={"branch_id": str(branch.id), "opening_float": "150.00"},
+    )
+    assert opened.status_code == 200, opened.text
+    data = opened.json()["data"]
+    assert data["status"] == "open" and data["opening_float"] == "150.00"
+
+    current = await client.get(
+        "/api/v1/cashier/sessions/current", params={"branch_id": str(branch.id)}
+    )
+    assert current.status_code == 200
+    body = current.json()["data"]
+    assert body["session"]["id"] == data["id"]
+    assert body["summary"]["expected_cash"] == "150.00"
+
+    dup = await client.post(
+        "/api/v1/cashier/sessions/open",
+        headers={"X-CSRF-Token": csrf},
+        json={"branch_id": str(branch.id), "opening_float": "0"},
+    )
+    assert dup.status_code == 409
+    assert dup.json()["error"]["code"] == "E-CSH-001"
+
+
+async def test_close_permission_matrix_and_flow(
+    client: httpx.AsyncClient, db_session: AsyncSession, branch: Branch
+) -> None:
+    cashier_csrf = await _login(client, await _seed_role_user(db_session, "cashier"))
+    opened = await client.post(
+        "/api/v1/cashier/sessions/open",
+        headers={"X-CSRF-Token": cashier_csrf},
+        json={"branch_id": str(branch.id), "opening_float": "75.00"},
+    )
+    session_id = opened.json()["data"]["id"]
+
+    # The cashier cannot close their own drawer (cashier.close_session).
+    denied = await client.post(
+        f"/api/v1/cashier/sessions/{session_id}/close",
+        headers={"X-CSRF-Token": cashier_csrf},
+        json={"counted_cash": "75.00"},
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "E-AUTH-002"
+
+    # The branch manager closes it (and CSRF stays mandatory).
+    manager_csrf = await _login(client, await _seed_role_user(db_session, "branch_manager"))
+    no_csrf = await client.post(
+        f"/api/v1/cashier/sessions/{session_id}/close", json={"counted_cash": "75.00"}
+    )
+    assert no_csrf.status_code == 403
+
+    closed = await client.post(
+        f"/api/v1/cashier/sessions/{session_id}/close",
+        headers={"X-CSRF-Token": manager_csrf},
+        json={"counted_cash": "80.00", "notes": "زيادة"},
+    )
+    assert closed.status_code == 200, closed.text
+    data = closed.json()["data"]
+    assert data["status"] == "closed"
+    assert data["expected_cash"] == "75.00" and data["discrepancy"] == "5.00"
+
+
+async def test_view_cash_gates_lists_and_z_report(
+    client: httpx.AsyncClient, db_session: AsyncSession, branch: Branch
+) -> None:
+    # cashier lacks cashier.view_cash.
+    await _login(client, await _seed_role_user(db_session, "cashier"))
+    denied = await client.get("/api/v1/cashier/z-report", params={"branch_id": str(branch.id)})
+    assert denied.status_code == 403
+
+    await _login(client, await _seed_role_user(db_session, "branch_manager"))
+    report = await client.get("/api/v1/cashier/z-report", params={"branch_id": str(branch.id)})
+    assert report.status_code == 200, report.text
+    body = report.json()["data"]
+    assert body["date"] == dt.date.today().isoformat()
+    assert "total_sales" in body and "sessions" in body
+
+    listed = await client.get(
+        "/api/v1/cashier/sessions",
+        params={"branch_id": str(branch.id), "day": dt.date.today().isoformat()},
+    )
+    assert listed.status_code == 200
+    for row in listed.json()["data"]:
+        assert "cashier_username" in row
