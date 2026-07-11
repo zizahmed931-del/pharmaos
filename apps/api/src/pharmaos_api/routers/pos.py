@@ -166,6 +166,8 @@ def _receipt_json(r: receipt_service.InvoiceReceipt, *, thermal_ready: bool) -> 
         "subtotal": str(r.subtotal),
         "discount": str(r.discount),
         "total": str(r.total),
+        "tendered_amount": str(r.tendered) if r.tendered is not None else None,
+        "change_amount": str(r.change_due) if r.change_due is not None else None,
         "branch_name": r.branch_name,
         "pharmacy_name": r.pharmacy_name,
         "address": r.address,
@@ -242,6 +244,19 @@ async def print_invoice(
     host = body.printer_host or cfg.printer_host
     if not host:
         raise ApiError(ErrorCode.PRINTER_NOT_CONFIGURED, 409)
+    # Hardening (M11): a configured PRODUCTION device prints only to ITS printer —
+    # a request-supplied host would otherwise be a LAN port-probe oracle
+    # (E-PRN-002 vs. success reveals open ports to any sales.create holder).
+    # Unconfigured devices keep the override for first-time setup/diagnostics.
+    if (
+        cfg.is_production
+        and cfg.printer_host
+        and body.printer_host
+        and body.printer_host != cfg.printer_host
+    ):
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED, 422, message="Printer host is fixed on this device."
+        )
     port = body.printer_port or cfg.printer_port
 
     open_drawer = (

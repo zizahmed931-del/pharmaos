@@ -86,6 +86,8 @@ class ReceiptData:
     license_number: str | None = None
     tax_registration_no: str | None = None
     payment_method_display: str | None = None
+    tendered: Decimal | None = None  # cash received from the customer (M10/M11)
+    change_due: Decimal | None = None
     qr_content: str | None = None
     show_signature: bool = False
     extra_lines: list[str] = field(default_factory=list)
@@ -144,6 +146,10 @@ def build_receipt(receipt: ReceiptData, *, open_drawer: bool = True) -> bytes:
     out += NORMAL_SIZE + BOLD_OFF
     if receipt.payment_method_display:
         out += _text(f"طريقة الدفع: {receipt.payment_method_display}") + FEED
+    if receipt.tendered is not None:
+        out += _amount_row("المدفوع", receipt.tendered, receipt.currency_symbol)
+    if receipt.change_due is not None:
+        out += _amount_row("الباقي", receipt.change_due, receipt.currency_symbol)
 
     if receipt.qr_content:
         out += ALIGN_CENTER + FEED

@@ -58,6 +58,8 @@ class InvoiceReceipt:
     subtotal: Decimal
     discount: Decimal
     total: Decimal
+    tendered: Decimal | None
+    change_due: Decimal | None
     branch_name: str
     pharmacy_name: str
     address: str | None
@@ -146,6 +148,8 @@ async def load_invoice_receipt(session: AsyncSession, invoice_id: uuid.UUID) -> 
         subtotal=invoice.subtotal,
         discount=invoice.discount_amount,
         total=invoice.total,
+        tendered=invoice.tendered_amount,
+        change_due=invoice.change_amount,
         branch_name=branch.name,
         pharmacy_name=pharmacy_name,
         address=settings.address if settings else None,
@@ -189,6 +193,8 @@ def to_escpos(receipt: InvoiceReceipt, *, open_drawer: bool) -> bytes:
             license_number=receipt.license_number,
             tax_registration_no=receipt.tax_registration_no,
             payment_method_display=receipt.payment_method_display,
+            tendered=receipt.tendered,
+            change_due=receipt.change_due,
             qr_content=receipt.qr_content,
             show_signature=receipt.show_pharmacist_signature,
         ),

@@ -320,27 +320,30 @@ async def _catalog_seed(file_path: str, price_source: str) -> int:
 
 
 async def _inventory_maintenance(command: str) -> int:
-    """P1-M7: drift check / cache rebuild for every branch (periodic + at boot)."""
+    """P1-M7/M11: drift check / cache rebuild / expiry sweep (periodic + at boot)."""
     import json as _json
 
     from pharmaos_api.models import Branch
     from pharmaos_api.services import inventory_service
 
     async with get_session_factory()() as session:
-        branches = (
-            (await session.execute(select(Branch).where(Branch.is_deleted.is_(False))))
-            .scalars()
-            .all()
-        )
         out: dict[str, object] = {}
-        for branch in branches:
-            if command == "rebuild":
-                out[str(branch.id)] = {
-                    "rows": await inventory_service.rebuild_cache(session, branch.id)
-                }
-            else:
-                drift = await inventory_service.drift_check(session, branch.id)
-                out[str(branch.id)] = {"drift_rows": drift}
+        if command == "expiry-sweep":
+            out["expiry_sweep"] = await inventory_service.expiry_sweep(session)
+        else:
+            branches = (
+                (await session.execute(select(Branch).where(Branch.is_deleted.is_(False))))
+                .scalars()
+                .all()
+            )
+            for branch in branches:
+                if command == "rebuild":
+                    out[str(branch.id)] = {
+                        "rows": await inventory_service.rebuild_cache(session, branch.id)
+                    }
+                else:
+                    drift = await inventory_service.drift_check(session, branch.id)
+                    out[str(branch.id)] = {"drift_rows": drift}
     print(_json.dumps(out, ensure_ascii=False, indent=1))
     if command == "check" and any(v["drift_rows"] for v in out.values()):  # type: ignore[index]
         return 4
@@ -384,6 +387,9 @@ def main(argv: list[str] | None = None) -> int:
     inv_sub = inv.add_subparsers(dest="inventory_command", required=True)
     inv_sub.add_parser("drift-check", help="Verify cached_quantity == SUM(active batches).")
     inv_sub.add_parser("rebuild-cache", help="Rebuild the derived cache from batch truth.")
+    inv_sub.add_parser(
+        "expiry-sweep", help="Mark past-expiry active batches as expired (cron-able)."
+    )
 
     args = parser.parse_args(argv)
     if args.command == "bootstrap-admin":
@@ -403,7 +409,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "skeleton-demo-data":
         return asyncio.run(_skeleton_demo_data())
     if args.command == "inventory":
-        cmd = "rebuild" if args.inventory_command == "rebuild-cache" else "check"
+        cmd = {"rebuild-cache": "rebuild", "expiry-sweep": "expiry-sweep"}.get(
+            args.inventory_command, "check"
+        )
         return asyncio.run(_inventory_maintenance(cmd))
     if args.command == "catalog-seed":
         return asyncio.run(_catalog_seed(args.file, args.source))

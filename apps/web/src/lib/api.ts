@@ -580,6 +580,8 @@ export interface InvoiceReceipt {
   subtotal: string;
   discount: string;
   total: string;
+  tendered_amount: string | null;
+  change_amount: string | null;
   branch_name: string;
   pharmacy_name: string;
   address: string | null;

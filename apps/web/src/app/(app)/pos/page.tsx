@@ -11,12 +11,15 @@ import {
   Select,
   Spinner,
 } from '@pharmaos/ui';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
+
+import Link from 'next/link';
 
 import {
   ApiRequestError,
   createPosSale,
+  getCurrentCashSession,
   getInvoiceReceipt,
   getMedication,
   type InvoiceReceipt,
@@ -29,6 +32,7 @@ import {
   printInvoice,
   searchMedications,
 } from '@/lib/api';
+import { useAuth } from '@/lib/auth-store';
 import { t } from '@/lib/i18n';
 import { toast } from '@/lib/toast-store';
 
@@ -69,6 +73,7 @@ const lineTotal = (l: CartLine): number => {
  * has a key: ↑↓ select · +/− quantity · F6 cycle unit · Delete remove · F4 pay.
  */
 export default function PosPage() {
+  const qc = useQueryClient();
   const scanRef = useRef<HTMLInputElement>(null);
 
   const [branchId, setBranchId] = useState('');
@@ -90,6 +95,16 @@ export default function PosPage() {
     if (!branchId && first) setBranchId(first.id);
   }, [branches, branchId]);
   const currency = branches.find((b) => b.id === branchId)?.currency_code ?? 'EGP';
+
+  // M11 — drawer-accountability hint: a seller who CAN hold a session but has
+  // none open gets a nudge (sales still work; they land outside sessions).
+  const canOpenSession = useAuth((s) => s.hasPermission('cashier.open_session'));
+  const sessionQuery = useQuery({
+    queryKey: ['cash-current', branchId],
+    queryFn: () => getCurrentCashSession(branchId),
+    enabled: !!branchId && canOpenSession,
+  });
+  const noOpenSession = canOpenSession && sessionQuery.data?.session === null;
 
   const focusScan = () => {
     scanRef.current?.focus();
@@ -442,6 +457,15 @@ export default function PosPage() {
         </div>
       </div>
 
+      {noOpenSession && (
+        <div className="flex items-center justify-between rounded-[var(--radius-md)] border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+          <span>{t('pos.no_session_hint')}</span>
+          <Link href="/cashier" className="font-semibold text-primary-700 hover:underline">
+            {t('cashier.open')}
+          </Link>
+        </div>
+      )}
+
       {/* Scan box + name-search results */}
       <div className="relative">
         <Input
@@ -628,6 +652,7 @@ export default function PosPage() {
           onDone={(info) => {
             setPayOpen(false);
             setDone(info);
+            qc.invalidateQueries({ queryKey: ['cash-current', branchId] }); // drawer summary moved
             void startPrintFlow(info);
           }}
         />
@@ -780,6 +805,22 @@ function PrintableReceipt({ receipt }: { receipt: InvoiceReceipt }) {
           <span>{t('receipt.payment')}</span>
           <span>{receipt.payment_method_display}</span>
         </div>
+        {receipt.tendered_amount !== null && (
+          <div className="flex justify-between">
+            <span>{t('receipt.tendered')}</span>
+            <span className="tabular-nums">
+              {receipt.tendered_amount} {receipt.currency_symbol}
+            </span>
+          </div>
+        )}
+        {receipt.change_amount !== null && (
+          <div className="flex justify-between">
+            <span>{t('receipt.change')}</span>
+            <span className="tabular-nums">
+              {receipt.change_amount} {receipt.currency_symbol}
+            </span>
+          </div>
+        )}
       </div>
       {receipt.show_pharmacist_signature && (
         <div className="mt-6">

@@ -23,13 +23,13 @@ PharmaOS/
 
 ## Toolchain (targets)
 
-| Tool | Target |
-|---|---|
-| Node.js | 22 LTS |
-| pnpm | 10.x |
-| Python | 3.12 |
+| Tool       | Target      |
+| ---------- | ----------- |
+| Node.js    | 22 LTS      |
+| pnpm       | 10.x        |
+| Python     | 3.12        |
 | PostgreSQL | 17 (Docker) |
-| Redis | 7 (Docker) |
+| Redis      | 7 (Docker)  |
 
 Exact pins live in `docs/versions.md` and in the lockfiles. See the version policy in `CLAUDE.md`.
 
@@ -79,6 +79,13 @@ Root scripts: `pnpm build`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm fo
 
 ## Status
 
-**Phase 0 (Foundations) complete** — 12/12 milestones including the walking skeleton
-(hardware print test runs on the physical pharmacy device). Phase 1 (Core MVP) is next.
+**Phase 0 (Foundations) complete** — 12/12 milestones including the walking skeleton.
+**Phase 1 (Core MVP) code-complete** — M1..M11: auth/RBAC/users, branch settings,
+medication catalog (Arabic FTS + GS1), 25k CC0 seed, inventory (FEFO batches +
+derived cache + drift self-heal + expiry sweep), full POS (unit switching,
+mouse-free flow), ESC/POS receipt printing + cash drawer, and cash sessions with
+the end-of-day Z-report.
+
+Remaining before pilot sign-off: the on-device hardware pass —
+follow **`docs/pilot-checklist.md`** on the pharmacy machine.
 See `docs/versions.md` for the pinned version matrix and upgrade log.

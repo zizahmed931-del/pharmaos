@@ -62,6 +62,31 @@ async def receive_stock(
     if expiry_date <= dt.date.today():
         raise ApiError(ErrorCode.BATCH_EXPIRED, 422, message="Cannot receive expired stock.")
 
+    # M11 hardening: validate references EXPLICITLY — an unknown id must be a
+    # clean 422/404 for the UI, never a 500 from the FK violation.
+    branch = await session.get(Branch, branch_id)
+    if branch is None or branch.is_deleted or not branch.is_active:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Unknown branch.")
+    medication = (
+        await session.execute(
+            select(Medication).where(
+                Medication.id == medication_id, Medication.is_deleted.is_(False)
+            )
+        )
+    ).scalar_one_or_none()
+    if medication is None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Medication not found.")
+    if supplier_id is not None:
+        supplier_exists = (
+            await session.execute(
+                text("SELECT 1 FROM suppliers WHERE id = :s AND NOT is_deleted").bindparams(
+                    s=supplier_id
+                )
+            )
+        ).scalar_one_or_none()
+        if supplier_exists is None:
+            raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Unknown supplier.")
+
     batch = MedicationBatch(
         branch_id=branch_id,
         medication_id=medication_id,
@@ -419,13 +444,61 @@ async def create_supplier(session: AsyncSession, *, actor: User, name: str) -> d
     return {"id": str(row[0]), "name": row[1]}
 
 
+# --------------------------- expiry sweep (M11) ---------------------------
+
+
+async def expiry_sweep(session: AsyncSession) -> dict[str, int]:
+    """Mark past-expiry ACTIVE batches as 'expired' and remove their quantity
+    from the derived cache — expired stock must never look sellable on any
+    screen. Runs at boot and via the CLI (cron-able on the device).
+
+    Ledger: one expiry_writeoff movement per swept batch (delta 0 — the
+    physical quantity is unchanged; the SELLABLE stock changed, same convention
+    as quarantine). The sale path already refuses expired batches by date; the
+    sweep aligns statuses and the cache with that reality.
+    """
+    today = dt.date.today()
+    batches = list(
+        (
+            await session.execute(
+                select(MedicationBatch)
+                .where(
+                    MedicationBatch.is_deleted.is_(False),
+                    MedicationBatch.status == "active",
+                    MedicationBatch.expiry_date < today,
+                )
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    for batch in batches:
+        if batch.quantity > 0:
+            await apply_cache_delta(session, batch.branch_id, batch.medication_id, -batch.quantity)
+        session.add(
+            StockMovement(
+                branch_id=batch.branch_id,
+                batch_id=batch.id,
+                movement_type="expiry_writeoff",
+                quantity_delta=Decimal(0),  # physical qty unchanged; sellable stock changed
+                reference_type="system",
+                reason="expiry_sweep",
+            )
+        )
+        batch.status = "expired"
+    if batches:
+        await session.commit()
+    return {"swept": len(batches)}
+
+
 # ------------------------------ boot-time integrity ------------------------------
 
 
 async def boot_check_and_heal(session: AsyncSession) -> dict[str, dict[str, object]]:
-    """At app boot: verify cached_quantity == SUM(active batches) for every branch;
-    self-heal any drift by rebuilding from batch truth (the cache is derived, so a
-    rebuild is always safe). Returns a per-branch summary for the boot log."""
+    """At app boot: sweep past-expiry batches, then verify
+    cached_quantity == SUM(active batches) for every branch and self-heal any
+    drift by rebuilding from batch truth (the cache is derived, so a rebuild is
+    always safe). Returns a per-branch summary for the boot log."""
+    swept = await expiry_sweep(session)
     branch_ids = (
         (await session.execute(select(Branch.id).where(Branch.is_deleted.is_(False))))
         .scalars()
@@ -437,4 +510,5 @@ async def boot_check_and_heal(session: AsyncSession) -> dict[str, dict[str, obje
         if drift:
             await rebuild_cache(session, branch_id)
         summary[str(branch_id)] = {"drifted": len(drift), "healed": bool(drift)}
+    summary["_expiry_sweep"] = {"swept": swept["swept"]}
     return summary
