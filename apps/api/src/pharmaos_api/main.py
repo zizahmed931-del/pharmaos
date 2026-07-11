@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from pharmaos_api.errors import ApiError, ErrorCode, error_envelope, success_envelope
 from pharmaos_api.middleware import LoginRateLimitMiddleware, SecurityHeadersMiddleware
-from pharmaos_api.routers import auth, pos, users
+from pharmaos_api.routers import auth, config, pos, users
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(pos.router)
     app.include_router(users.router)
+    app.include_router(config.router)
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:

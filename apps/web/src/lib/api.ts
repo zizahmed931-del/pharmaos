@@ -111,3 +111,52 @@ export function resetUserPassword(id: string, newPassword: string) {
     body: JSON.stringify({ new_password: newPassword }),
   });
 }
+
+// ---- Branch & settings (P1-M4) ----
+
+export interface BranchInfo {
+  id: string;
+  name: string;
+  country_code: string;
+  currency_code: string;
+  is_active: boolean;
+}
+
+export interface BranchSettings {
+  id: string;
+  branch_id: string;
+  pharmacy_name: string;
+  pharmacy_logo: string | null;
+  license_number: string | null;
+  address: string | null;
+  phone: string | null;
+  tax_registration_no: string | null;
+  return_policy: string | null;
+  thank_you_message: string | null;
+  paper_size: '80mm' | 'A4' | 'A5';
+  show_pharmacist_signature: boolean;
+  show_qr_code: boolean;
+  max_discount_percent: string;
+}
+
+export function listBranches() {
+  return apiFetch<BranchInfo[]>('/api/v1/branches');
+}
+
+export function getSettings(branchId: string) {
+  return apiFetch<BranchSettings | null>(`/api/v1/branches/${branchId}/settings`);
+}
+
+export function putSettings(branchId: string, values: Record<string, unknown>) {
+  return apiFetch<BranchSettings>(`/api/v1/branches/${branchId}/settings`, {
+    method: 'PUT',
+    body: JSON.stringify(values),
+  });
+}
+
+export function updateBranch(branchId: string, values: Record<string, unknown>) {
+  return apiFetch<BranchInfo>(`/api/v1/branches/${branchId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(values),
+  });
+}

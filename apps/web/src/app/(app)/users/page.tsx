@@ -1,7 +1,17 @@
 'use client';
 
 import { SystemRole } from '@pharmaos/shared';
-import { Badge, Button, Card, CardContent, Input, Label, Select, Spinner } from '@pharmaos/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  Input,
+  Label,
+  Modal,
+  Select,
+  Spinner,
+} from '@pharmaos/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 
@@ -16,6 +26,7 @@ import {
   type ManagedUser,
 } from '@/lib/api';
 import { t } from '@/lib/i18n';
+import { toast } from '@/lib/toast-store';
 
 const ROLE_CODES = Object.values(SystemRole);
 
@@ -32,6 +43,8 @@ export default function UsersPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<CreateUserInput>(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
+  const [resetTarget, setResetTarget] = useState<ManagedUser | null>(null);
+  const [newPassword, setNewPassword] = useState('');
 
   const usersQuery = useQuery({ queryKey: ['users'], queryFn: listUsers });
   const invalidate = () => qc.invalidateQueries({ queryKey: ['users'] });
@@ -43,6 +56,7 @@ export default function UsersPage() {
       setForm(EMPTY_FORM);
       setFormError(null);
       invalidate();
+      toast.success(t('users.created_ok'));
     },
     onError: (e) => setFormError(e instanceof ApiRequestError ? e.code : 'E-SYS-001'),
   });
@@ -50,27 +64,22 @@ export default function UsersPage() {
   const roleMut = useMutation({
     mutationFn: (v: { id: string; role: string }) => changeUserRole(v.id, v.role),
     onSuccess: invalidate,
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
   });
   const activeMut = useMutation({
     mutationFn: (v: { id: string; active: boolean }) => setUserActive(v.id, v.active),
     onSuccess: invalidate,
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
   });
   const resetMut = useMutation({
     mutationFn: (v: { id: string; pw: string }) => resetUserPassword(v.id, v.pw),
+    onSuccess: () => {
+      setResetTarget(null);
+      setNewPassword('');
+      toast.success(t('users.reset_done'));
+    },
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
   });
-
-  const onResetPassword = (u: ManagedUser) => {
-    const pw = window.prompt(t('users.reset_prompt'));
-    if (!pw) return;
-    resetMut.mutate(
-      { id: u.id, pw },
-      {
-        onSuccess: () => window.alert(t('users.reset_done')),
-        onError: (e) =>
-          window.alert(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
-      },
-    );
-  };
 
   return (
     <div className="mx-auto max-w-5xl space-y-6">
@@ -196,7 +205,7 @@ export default function UsersPage() {
                       >
                         {u.is_active ? t('users.deactivate') : t('users.activate')}
                       </Button>
-                      <Button size="sm" variant="ghost" onClick={() => onResetPassword(u)}>
+                      <Button size="sm" variant="ghost" onClick={() => setResetTarget(u)}>
                         {t('users.reset_password')}
                       </Button>
                     </td>
@@ -207,6 +216,44 @@ export default function UsersPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Password reset — a proper modal (never a browser prompt; CLAUDE.md UX rule) */}
+      <Modal
+        open={resetTarget !== null}
+        onClose={() => setResetTarget(null)}
+        title={`${t('users.reset_password')} — ${resetTarget?.username ?? ''}`}
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (resetTarget && newPassword) {
+              resetMut.mutate({ id: resetTarget.id, pw: newPassword });
+            }
+          }}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="new-pw">{t('users.reset_prompt')}</Label>
+            <Input
+              id="new-pw"
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              autoComplete="new-password"
+              autoFocus
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setResetTarget(null)}>
+              {t('users.cancel')}
+            </Button>
+            <Button type="submit" variant="danger" disabled={resetMut.isPending}>
+              {t('users.reset_password')}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { Sidebar } from '@/components/sidebar';
+import { Toaster } from '@/components/toaster';
 import { Topbar } from '@/components/topbar';
 import { ApiRequestError, fetchMe } from '@/lib/api';
 import { useAuth } from '@/lib/auth-store';
@@ -55,6 +56,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <Topbar />
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>
+      <Toaster />
     </div>
   );
 }
