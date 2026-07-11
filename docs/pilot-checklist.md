@@ -14,7 +14,7 @@
 ## ٢ — التثبيت والتهيئة الأولى
 
 - [ ] `pnpm install` ثم `docker compose up -d` (PostgreSQL 17 + Redis 7 على localhost فقط).
-- [ ] تطبيق الهجرات: `packages/db/scripts/apply-migrations.sh` — **11 هجرة** + بذر RBAC تلقائياً.
+- [ ] تطبيق الهجرات: `packages/db/scripts/apply-migrations.sh` — **10 هجرات** + بذر RBAC تلقائياً.
 - [ ] `python3.12 -m pip install -e "apps/api[dev]"` ثم إنشاء مالك النظام: `python3.12 -m pharmaos_api.cli bootstrap-admin …` — **كلمة مرور قوية تُحفظ لدى المالك فقط**.
 - [ ] `bootstrap-branch` باسم الفرع الحقيقي، ثم ضبط إعدادات الفرع من الشاشة: اسم الصيدلية، العنوان، الهاتف، الترخيص، الرقم الضريبي، مقاس الورق **80mm**، رسالة الشكر، تفعيل QR والتوقيع حسب الرغبة.
 - [ ] **مفتاح النسخ الاحتياطي**: `python3.12 -m pharmaos_api.cli backup export-key` — يُطبع ويُحفظ **ورقياً في مظروف مغلق خارج الجهاز**. بدونه لا يمكن الاستعادة بعد فقدان الجهاز.
