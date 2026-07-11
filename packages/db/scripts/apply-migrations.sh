@@ -31,4 +31,14 @@ for file in "$MIGRATIONS_DIR"/*.sql; do
   "${PSQL[@]}" -1 -f "$file"
   "${PSQL[@]}" -c "INSERT INTO _pharmaos_migrations(version) VALUES ('$version');"
 done
+
+# Code-defined seeds run on EVERY migration run (CLAUDE.md RBAC v1.1:
+# "تُبذَر من الكود عند كل migration" — code always wins). Seeds are idempotent.
+SEEDS_DIR="$REPO_ROOT/packages/db/seeds"
+if [[ -d "$SEEDS_DIR" ]]; then
+  for seed in "$SEEDS_DIR"/*.sql; do
+    echo "seed   : $(basename "$seed")"
+    "${PSQL[@]}" -f "$seed"
+  done
+fi
 echo "OK: all migrations applied."
