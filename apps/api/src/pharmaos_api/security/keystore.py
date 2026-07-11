@@ -32,6 +32,7 @@ SERVICE_NAME = "pharmaos"
 JWT_PRIVATE_KEY_NAME = "JWT_PRIVATE_KEY"
 JWT_PUBLIC_KEY_NAME = "JWT_PUBLIC_KEY"
 ENCRYPTION_KEY_NAME = "ENCRYPTION_KEY"
+BACKUP_KEY_NAME = "BACKUP_ENCRYPTION_KEY"
 
 _DEV_STORE_DIR = Path(".pharmaos-devkeys")
 
@@ -121,4 +122,16 @@ def ensure_encryption_key() -> bytes:
     key = os.urandom(32)
     set_secret(ENCRYPTION_KEY_NAME, key.hex())
     logger.info("Generated new AES-256 field-encryption key and stored it in the keystore.")
+    return key
+
+
+def ensure_backup_key() -> bytes:
+    """Return the INDEPENDENT 32-byte backup-encryption key (CLAUDE.md:
+    backups are always encrypted with a key separate from the field key)."""
+    stored = get_secret(BACKUP_KEY_NAME)
+    if stored:
+        return bytes.fromhex(stored)
+    key = os.urandom(32)
+    set_secret(BACKUP_KEY_NAME, key.hex())
+    logger.info("Generated new AES-256 backup-encryption key and stored it in the keystore.")
     return key

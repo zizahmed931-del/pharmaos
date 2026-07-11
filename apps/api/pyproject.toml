@@ -16,13 +16,15 @@ dependencies = [
     "PyJWT==2.13.0",
     "cryptography==49.0.0",
     "keyring==25.7.0",
+    "celery==5.6.3",
+    "redis==8.0.1",
+    "httpx==0.28.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
-    "httpx==0.28.1",
     "ruff==0.15.21",
     "black==26.5.1",
     "mypy==2.2.0",
@@ -62,6 +64,16 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
+
+# Celery ships no type stubs (no py.typed marker) — its decorators are treated
+# as untyped by mypy. Scoped exception for the task module only.
+[[tool.mypy.overrides]]
+module = "celery.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pharmaos_api.celery_app"
+disallow_untyped_decorators = false
 
 [tool.pytest.ini_options]
 addopts = "-q"
