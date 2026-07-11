@@ -45,3 +45,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Dev-only keystore fallback (real devices use the OS keystore)
+.pharmaos-devkeys/
