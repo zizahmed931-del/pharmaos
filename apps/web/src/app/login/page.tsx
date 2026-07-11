@@ -47,9 +47,7 @@ export default function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
           <div className="text-3xl font-extrabold text-primary-600">{t('app.name')}</div>
-          <CardTitle className="text-base font-medium text-slate-500">
-            {t('app.tagline')}
-          </CardTitle>
+          <CardTitle className="text-base font-medium text-slate-500">{t('app.tagline')}</CardTitle>
         </CardHeader>
         <CardContent>
           <h1 className="mb-4 text-lg font-bold">{t('login.title')}</h1>
