@@ -103,6 +103,209 @@ def _backup_export_key() -> int:
     return 0
 
 
+async def _bootstrap_branch(name: str) -> int:
+    """Create the first branch (country/currency from settings — EG/EGP default)."""
+    from pharmaos_api.config import get_settings
+    from pharmaos_api.models import Branch
+
+    s = get_settings()
+    async with get_session_factory()() as session:
+        existing = (
+            (await session.execute(select(Branch).where(Branch.is_deleted.is_(False))))
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            print(f"branch already exists: {existing.name} ({existing.id})", file=sys.stderr)
+            return 1
+        branch = Branch(name=name, country_code=s.country_code, currency_code=s.default_currency)
+        session.add(branch)
+        await session.commit()
+        print(f"branch created: {branch.id}")
+        return 0
+
+
+async def _skeleton_demo_data() -> int:
+    """Walking-skeleton demo data: one medication (box/strip/tablet + barcode + batch).
+
+    Exists so the M12 hardware test (scan -> sale -> print) can run on a fresh
+    device BEFORE Phase 1 catalog seeding. Idempotent by barcode.
+    """
+    import datetime as dt
+    from decimal import Decimal
+
+    from pharmaos_api.models import (
+        Branch,
+        Medication,
+        MedicationBarcode,
+        MedicationBatch,
+    )
+    from pharmaos_api.models.catalog import MedicationPackaging as Packaging
+
+    demo_barcode = "6224000000017"
+    async with get_session_factory()() as session:
+        branch = (
+            (await session.execute(select(Branch).where(Branch.is_deleted.is_(False))))
+            .scalars()
+            .first()
+        )
+        if branch is None:
+            print("no branch — run bootstrap-branch first.", file=sys.stderr)
+            return 1
+        exists = (
+            await session.execute(
+                select(MedicationBarcode).where(MedicationBarcode.barcode == demo_barcode)
+            )
+        ).scalar_one_or_none()
+        if exists is not None:
+            print("demo data already present.", file=sys.stderr)
+            return 1
+
+        from sqlalchemy import text as sql_text
+
+        from pharmaos_api.models.base import Base  # noqa: F401  (explicit models below)
+
+        unit_ids: dict[str, str] = {}
+        for name_ar in ("علبة", "شريط", "قرص"):
+            row = (
+                await session.execute(
+                    sql_text("INSERT INTO units (name_ar) VALUES (:n) RETURNING id").bindparams(
+                        n=name_ar
+                    )
+                )
+            ).scalar_one()
+            unit_ids[name_ar] = str(row)
+
+        med = Medication(trade_name="Panadol Demo 500mg", trade_name_ar="بنادول تجريبي ٥٠٠")
+        session.add(med)
+        await session.flush()
+
+        levels = [
+            Packaging(
+                medication_id=med.id,
+                level=1,
+                unit_id=unit_ids["علبة"],
+                name_ar="علبة",
+                qty_in_parent=None,
+                selling_price=Decimal("90.00"),
+            ),
+            Packaging(
+                medication_id=med.id,
+                level=2,
+                unit_id=unit_ids["شريط"],
+                name_ar="شريط",
+                qty_in_parent=Decimal(3),
+                selling_price=Decimal("30.00"),
+                is_default_sale=True,
+            ),
+            Packaging(
+                medication_id=med.id,
+                level=3,
+                unit_id=unit_ids["قرص"],
+                name_ar="قرص",
+                qty_in_parent=Decimal(10),
+                selling_price=Decimal("3.50"),
+            ),
+        ]
+        session.add_all(levels)
+        await session.flush()
+
+        session.add(MedicationBarcode(medication_id=med.id, barcode=demo_barcode, is_primary=True))
+        session.add(
+            MedicationBatch(
+                branch_id=branch.id,
+                medication_id=med.id,
+                batch_number="DEMO-001",
+                expiry_date=dt.date.today() + dt.timedelta(days=365),
+                quantity=Decimal(300),
+                purchase_price=Decimal("2.00"),
+            )
+        )
+        await session.commit()
+        print(f"demo medication ready — barcode: {demo_barcode} (300 tablets in stock)")
+        return 0
+
+
+async def _skeleton_sale(barcode: str, qty: str, print_host: str | None, out_file: str) -> int:
+    """The M12 vertical slice: scan -> sale (FEFO, atomic) -> ESC/POS receipt."""
+    from decimal import Decimal
+
+    from sqlalchemy import select as sa_select
+
+    from pharmaos_api.models import Branch, InvoiceItem, User
+    from pharmaos_api.printing.escpos import ReceiptData, ReceiptLine, build_receipt, send_raw
+    from pharmaos_api.services import sales_service
+
+    async with get_session_factory()() as session:
+        branch = (
+            (await session.execute(sa_select(Branch).where(Branch.is_deleted.is_(False))))
+            .scalars()
+            .first()
+        )
+        cashier = (
+            (await session.execute(sa_select(User).where(User.is_deleted.is_(False))))
+            .scalars()
+            .first()
+        )
+        if branch is None or cashier is None:
+            print(
+                "need a branch and a user — run bootstrap-branch / bootstrap-admin.",
+                file=sys.stderr,
+            )
+            return 1
+
+        scan = await sales_service.resolve_barcode(session, barcode)
+        invoice = await sales_service.create_sale(
+            session,
+            branch_id=branch.id,
+            lines=[sales_service.SaleLine(barcode=barcode, quantity=Decimal(qty))],
+            cashier=cashier,
+        )
+        items = (
+            (
+                await session.execute(
+                    sa_select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        payload = build_receipt(
+            ReceiptData(
+                pharmacy_name="PharmaOS",
+                branch_name=branch.name,
+                invoice_number=invoice.invoice_number,
+                created_at_display=invoice.created_at.strftime("%Y-%m-%d %H:%M"),
+                lines=[
+                    ReceiptLine(
+                        name=scan.trade_name_ar or scan.trade_name,
+                        quantity=item.quantity,
+                        unit_name=scan.packaging_name_ar,
+                        line_total=item.line_total,
+                    )
+                    for item in items
+                ],
+                subtotal=invoice.subtotal,
+                discount=invoice.discount_amount,
+                total=invoice.total,
+                currency_symbol="ج.م",
+                thank_you_message="شكراً لزيارتكم — نتمنى لكم الشفاء العاجل",
+            )
+        )
+        summary = f"total {invoice.total} {invoice.currency_code}"
+        print(f"sale completed: {invoice.invoice_number} — {summary}")
+        if print_host:
+            send_raw(payload, host=print_host)
+            print(f"receipt sent to printer at {print_host}:9100 (drawer pulse included)")
+        else:
+            # One-shot CLI write; blocking I/O is fine here (no event-loop traffic).
+            with open(out_file, "wb") as fh:  # noqa: ASYNC230
+                fh.write(payload)
+            print(f"no printer host given — ESC/POS bytes written to {out_file}")
+        return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pharmaos-api")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -121,6 +324,17 @@ def main(argv: list[str] | None = None) -> int:
     b_drill.add_argument("--drill-database-url", required=True)
     backup_sub.add_parser("export-key", help="Print the backup key for OFFLINE safekeeping.")
 
+    b_branch = sub.add_parser("bootstrap-branch", help="Create the first branch.")
+    b_branch.add_argument("--name", required=True)
+
+    sub.add_parser("skeleton-demo-data", help="Seed one demo medication for the M12 hardware test.")
+
+    b_sale = sub.add_parser("skeleton-sale", help="M12 slice: scan -> sale -> ESC/POS receipt.")
+    b_sale.add_argument("--barcode", required=True)
+    b_sale.add_argument("--qty", default="1")
+    b_sale.add_argument("--print-host", help="Network ESC/POS printer IP (port 9100).")
+    b_sale.add_argument("--out-file", default="receipt.escpos.bin")
+
     args = parser.parse_args(argv)
     if args.command == "bootstrap-admin":
         password = os.environ.get("PHARMAOS_ADMIN_PASSWORD") or getpass.getpass(
@@ -134,6 +348,12 @@ def main(argv: list[str] | None = None) -> int:
             return _backup_restore_drill(Path(args.file), args.drill_database_url)
         if args.backup_command == "export-key":
             return _backup_export_key()
+    if args.command == "bootstrap-branch":
+        return asyncio.run(_bootstrap_branch(args.name))
+    if args.command == "skeleton-demo-data":
+        return asyncio.run(_skeleton_demo_data())
+    if args.command == "skeleton-sale":
+        return asyncio.run(_skeleton_sale(args.barcode, args.qty, args.print_host, args.out_file))
     return 2
 
 
