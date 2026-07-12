@@ -609,3 +609,53 @@ export function printInvoice(invoiceId: string, opts: { open_drawer?: boolean } 
     { method: 'POST', body: JSON.stringify(opts) },
   );
 }
+
+// ---- Purchasing: supplier management (P2-M1) ----
+// Full supplier master under the purchases module. Distinct from the minimal
+// {id,name} listSuppliers/createSupplier above (/inventory/suppliers), which the
+// receiving picker still uses.
+
+export interface SupplierDetail {
+  id: string;
+  name: string;
+  contact_name: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  tax_registration_no: string | null;
+  payment_terms: string | null;
+  is_active: boolean;
+  notes: string | null;
+}
+
+export interface NewSupplier {
+  name: string;
+  contact_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  tax_registration_no?: string | null;
+  payment_terms?: string | null;
+  notes?: string | null;
+}
+
+export function listPurchaseSuppliers(opts: { search?: string; activeOnly?: boolean } = {}) {
+  const params = new URLSearchParams({ limit: '100' });
+  if (opts.search) params.set('search', opts.search);
+  if (opts.activeOnly) params.set('active_only', 'true');
+  return apiFetch<SupplierDetail[]>(`/api/v1/purchases/suppliers?${params.toString()}`);
+}
+
+export function createPurchaseSupplier(input: NewSupplier) {
+  return apiFetch<SupplierDetail>('/api/v1/purchases/suppliers', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePurchaseSupplier(id: string, values: Record<string, unknown>) {
+  return apiFetch<SupplierDetail>(`/api/v1/purchases/suppliers/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(values),
+  });
+}
