@@ -26,7 +26,12 @@ from pharmaos_api.errors import ApiError, ErrorCode, success_envelope
 from pharmaos_api.models import InvoiceItem, User
 from pharmaos_api.printing.escpos import send_raw
 from pharmaos_api.security.csrf import enforce_csrf
-from pharmaos_api.services import catalog_service, receipt_service, sales_service
+from pharmaos_api.services import (
+    catalog_service,
+    customer_service,
+    receipt_service,
+    sales_service,
+)
 
 router = APIRouter(prefix="/api/v1/pos", tags=["pos"])
 
@@ -88,6 +93,8 @@ class SaleIn(BaseModel):
     tendered: Decimal | None = Field(default=None, ge=0, le=Decimal("10000000"))
     # P2-M3: 2D-scanned pack serials dispensed in this sale (EDA track & trace).
     serials: list[str] = Field(default_factory=list, max_length=1000)
+    # P2-M5: optional customer for loyalty accrual + purchase history.
+    customer_id: uuid.UUID | None = None
 
 
 @router.post("/sale")
@@ -116,6 +123,7 @@ async def create_sale(
         payment_method=body.payment_method,
         tendered=body.tendered,
         serials=body.serials,
+        customer_id=body.customer_id,
     )
     items = (
         (await session.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)))
@@ -138,6 +146,12 @@ async def create_sale(
             ),
             "cash_session_id": (
                 str(invoice.cash_session_id) if invoice.cash_session_id is not None else None
+            ),
+            "customer_id": str(invoice.customer_id) if invoice.customer_id is not None else None,
+            "points_earned": (
+                customer_service.points_for_amount(invoice.total)
+                if invoice.customer_id is not None
+                else None
             ),
             "items": [
                 {

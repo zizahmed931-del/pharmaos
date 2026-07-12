@@ -82,3 +82,14 @@ async def test_batch_status_report_is_index_backed(db_session: AsyncSession) -> 
         "AND status = 'quarantined' AND NOT is_deleted",
     )
     assert "idx_batches_branch_status" in plan, plan
+
+
+async def test_customer_name_search_is_index_backed(db_session: AsyncSession) -> None:
+    """P2-M5 customer lookup by Arabic name (trigram) must hit the normalized-name
+    GIN index idx_customers_name_trgm."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT id FROM customers "
+        "WHERE normalize_arabic(name) % normalize_arabic('محمد')",
+    )
+    assert "idx_customers_name_trgm" in plan, plan

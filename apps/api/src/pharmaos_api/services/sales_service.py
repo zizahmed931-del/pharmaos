@@ -40,6 +40,7 @@ from pharmaos_api.services import (
     audit_service,
     cashier_service,
     catalog_service,
+    customer_service,
     pack_serial_service,
 )
 
@@ -265,6 +266,7 @@ async def create_sale(
     payment_method: str = "cash",
     tendered: Decimal | None = None,
     serials: list[str] | None = None,
+    customer_id: uuid.UUID | None = None,
 ) -> Invoice:
     """Create a completed sale invoice in ONE transaction (see module docstring).
 
@@ -434,6 +436,20 @@ async def create_sale(
             invoice_id=invoice.id,
             serials=serials,
         )
+
+    # P2-M5: attach the customer and accrue loyalty points — atomic with the
+    # sale (an unknown/inactive customer rolls the whole sale back). Validation
+    # happens in accrue_for_sale before we set the FK, so the customer_id link
+    # can never violate the constraint at commit.
+    if customer_id is not None:
+        await customer_service.accrue_for_sale(
+            session,
+            cashier=cashier,
+            customer_id=customer_id,
+            invoice_id=invoice.id,
+            total=total,
+        )
+        invoice.customer_id = customer_id
 
     # Audit the sale IN THE SAME transaction (CLAUDE.md: audit from the first
     # write). If the commit fails, the audit entry rolls back with the sale.

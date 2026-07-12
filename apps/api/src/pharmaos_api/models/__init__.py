@@ -9,6 +9,7 @@ from pharmaos_api.models.catalog import (
     MedicationPackaging,
     MedicationPriceHistory,
 )
+from pharmaos_api.models.customer import Customer, LoyaltyTransaction
 from pharmaos_api.models.operations import (
     CashSession,
     Invoice,
@@ -30,8 +31,10 @@ __all__ = [
     "CashSession",
     "Country",
     "Currency",
+    "Customer",
     "Invoice",
     "InvoiceItem",
+    "LoyaltyTransaction",
     "MandatoryColumnsMixin",
     "Medication",
     "MedicationBarcode",

@@ -109,6 +109,10 @@ class Invoice(MandatoryColumnsMixin, Base):
     )
     tendered_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     change_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    # P2-M5 — optional customer link (loyalty accrual + purchase history).
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True
+    )
 
 
 class InvoiceItem(MandatoryColumnsMixin, Base):
