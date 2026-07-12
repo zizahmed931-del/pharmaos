@@ -260,3 +260,41 @@ async def rebuild_cache(
     enforce_csrf(request)
     rows = await svc.rebuild_cache(session, body.branch_id)
     return success_envelope({"rows": rows})
+
+
+# ------------------------------ batch tracking (M4) ------------------------------
+
+
+@router.get("/inventory/expiry-alerts")
+async def expiry_alerts(
+    branch_id: uuid.UUID = Query(),
+    session: AsyncSession = Depends(get_session),
+    _: None = _view,
+) -> dict[str, object]:
+    """Near-expiry alerts for a branch's active stock, bucketed 30 / 60 / 90 days
+    (+ an already-expired bucket). Severities follow CLAUDE.md ALERT_RULES."""
+    return success_envelope(await svc.expiry_alerts(session, branch_id=branch_id))
+
+
+@router.get("/inventory/batch-report")
+async def batch_report(
+    branch_id: uuid.UUID = Query(),
+    session: AsyncSession = Depends(get_session),
+    _: None = _view,
+) -> dict[str, object]:
+    """Batch inventory by status (count / quantity / value) with the sellable vs.
+    locked-up (quarantined + expired + recalled) capital split."""
+    return success_envelope(await svc.batch_status_report(session, branch_id=branch_id))
+
+
+@router.post("/inventory/expiry-sweep")
+async def expiry_sweep(
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _: None = _adjust,
+) -> dict[str, object]:
+    """Run the auto-quarantine policy on demand: past-expiry ACTIVE batches are
+    marked expired and removed from sellable stock (also runs at boot and via the
+    CLI cron). Idempotent — a second run sweeps nothing. Returns the swept count."""
+    enforce_csrf(request)
+    return success_envelope(await svc.expiry_sweep(session))

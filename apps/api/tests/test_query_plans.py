@@ -57,3 +57,28 @@ async def test_arabic_trigram_fallback_is_index_backed(db_session: AsyncSession)
         "WHERE normalize_arabic(trade_name_ar) % normalize_arabic('كونجستال')",
     )
     assert "idx_medications_trgm" in plan, plan
+
+
+async def test_expiry_alert_scan_is_index_backed(db_session: AsyncSession) -> None:
+    """P2-M4 expiry alerts scan a branch's ACTIVE batches by expiry horizon —
+    must hit the partial idx_batches_expiry (branch_id, expiry_date) index."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT b.id FROM medication_batches b "
+        "WHERE b.branch_id = '00000000-0000-0000-0000-000000000001' "
+        "AND b.status = 'active' AND b.quantity > 0 "
+        "AND b.expiry_date <= CURRENT_DATE + 90",
+    )
+    assert "idx_batches_expiry" in plan, plan
+
+
+async def test_batch_status_report_is_index_backed(db_session: AsyncSession) -> None:
+    """P2-M4 batch reports filter a branch's batches by a selective (non-active)
+    status — must hit idx_batches_branch_status (branch_id, status)."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT id FROM medication_batches "
+        "WHERE branch_id = '00000000-0000-0000-0000-000000000001' "
+        "AND status = 'quarantined' AND NOT is_deleted",
+    )
+    assert "idx_batches_branch_status" in plan, plan

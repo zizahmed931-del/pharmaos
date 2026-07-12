@@ -25,9 +25,19 @@ from pharmaos_api.models import Branch, Medication, MedicationBatch, StockMoveme
 from pharmaos_api.services import audit_service, pack_serial_service
 
 _BATCH_STATUSES = {"active", "quarantined", "expired", "recalled", "depleted"}
+# Statuses whose stock is held OUT of sale but still on the shelf (capital locked
+# up) — the batch report sums their value separately from sellable (active) stock.
+_LOCKED_STATUSES = ("quarantined", "expired", "recalled")
+_REPORT_STATUSES = ("active", "quarantined", "expired", "recalled", "depleted")
 MAX_PAGE_SIZE = 100
 # Low-stock threshold: reorder point if set, else the minimum level (0 = untracked).
 _LOW_THRESHOLD = "COALESCE(NULLIF(bi.reorder_point, 0), NULLIF(bi.min_stock_level, 0), 0)"
+# Expiry-alert horizons (CLAUDE.md ALERT_RULES): a batch expiring within 30 days
+# is CRITICAL, within 90 days is a WARNING. 60 is the middle reporting window the
+# dashboard shows between the two (30 / 60 / 90).
+EXPIRY_CRITICAL_DAYS = 30
+EXPIRY_MID_DAYS = 60
+EXPIRY_WARNING_DAYS = 90
 
 
 async def apply_cache_delta(
@@ -451,6 +461,151 @@ async def list_batches(
         }
         for b, trade_name, trade_name_ar in rows
     ], int(total)
+
+
+# --------------------------- expiry alerts + batch reports (M4) ---------------------------
+
+
+def _bucket_for(days_left: int) -> str:
+    """Map days-to-expiry to an alert bucket (30 / 60 / 90 windows)."""
+    if days_left < 0:
+        return "expired"
+    if days_left <= EXPIRY_CRITICAL_DAYS:
+        return "within_30"
+    if days_left <= EXPIRY_MID_DAYS:
+        return "within_60"
+    return "within_90"
+
+
+async def expiry_alerts(session: AsyncSession, *, branch_id: uuid.UUID) -> dict[str, object]:
+    """Near-expiry alerts for a branch's ACTIVE (sellable) batches, bucketed by
+    days-to-expiry per CLAUDE.md ALERT_RULES:
+
+      expired    (danger)   — already past expiry but still active (awaiting the
+                              sweep); the sale path already refuses these.
+      within_30  (critical) — expires in 0..30 days.
+      within_60  (warning)  — expires in 31..60 days.
+      within_90  (warning)  — expires in 61..90 days (the reporting horizon).
+
+    Read-only over medication_batches (idx_batches_expiry). Only ACTIVE batches
+    count — quarantined/expired stock is not a near-expiry SELLABLE-stock concern
+    and appears in batch_status_report instead. Value = remaining quantity x unit
+    purchase price. Every Decimal is stringified (JSON envelope has no Decimal)."""
+    today = dt.date.today()
+    cutoff = today + dt.timedelta(days=EXPIRY_WARNING_DAYS)
+    rows = (await session.execute(text("""
+                SELECT b.id, b.medication_id, m.trade_name, m.trade_name_ar,
+                       b.batch_number, b.expiry_date, b.quantity, b.purchase_price
+                FROM medication_batches b
+                JOIN medications m ON m.id = b.medication_id
+                WHERE b.branch_id = :b AND NOT b.is_deleted
+                  AND b.status = 'active' AND b.quantity > 0
+                  AND b.expiry_date <= :cutoff
+                ORDER BY b.expiry_date, m.trade_name
+                """).bindparams(b=branch_id, cutoff=cutoff))).all()
+
+    severity = {
+        "expired": "danger",
+        "within_30": "critical",
+        "within_60": "warning",
+        "within_90": "warning",
+    }
+    grouped: dict[str, list[dict[str, object]]] = {name: [] for name in severity}
+    for r in rows:
+        days_left = (r.expiry_date - today).days
+        quantity = Decimal(r.quantity)
+        value = (quantity * Decimal(r.purchase_price)).quantize(Decimal("0.01"))
+        grouped[_bucket_for(days_left)].append(
+            {
+                "batch_id": str(r.id),
+                "medication_id": str(r.medication_id),
+                "trade_name": r.trade_name,
+                "trade_name_ar": r.trade_name_ar,
+                "batch_number": r.batch_number,
+                "expiry_date": r.expiry_date.isoformat(),
+                "days_left": days_left,
+                "quantity": str(quantity),
+                "purchase_price": str(r.purchase_price),
+                "value": str(value),
+            }
+        )
+
+    buckets: dict[str, object] = {}
+    total_count = 0
+    total_qty = Decimal(0)
+    total_val = Decimal(0)
+    for name, sev in severity.items():
+        batches = grouped[name]
+        bucket_qty = sum((Decimal(str(x["quantity"])) for x in batches), Decimal(0))
+        bucket_val = sum((Decimal(str(x["value"])) for x in batches), Decimal(0))
+        buckets[name] = {
+            "severity": sev,
+            "count": len(batches),
+            "total_quantity": str(bucket_qty),
+            "total_value": str(bucket_val),
+            "batches": batches,
+        }
+        total_count += len(batches)
+        total_qty += bucket_qty
+        total_val += bucket_val
+
+    return {
+        "as_of": today.isoformat(),
+        "windows": {
+            "critical_days": EXPIRY_CRITICAL_DAYS,
+            "mid_days": EXPIRY_MID_DAYS,
+            "warning_days": EXPIRY_WARNING_DAYS,
+        },
+        "buckets": buckets,
+        "totals": {
+            "count": total_count,
+            "total_quantity": str(total_qty),
+            "total_value": str(total_val),
+        },
+    }
+
+
+async def batch_status_report(session: AsyncSession, *, branch_id: uuid.UUID) -> dict[str, object]:
+    """Batch inventory by status for a branch: per-status count / quantity /
+    value, plus the sellable (active) vs. locked-up (quarantined+expired+recalled)
+    capital split. Backed by idx_batches_branch_status for the selective slices."""
+    rows = (await session.execute(text("""
+                SELECT status, COUNT(*) AS n,
+                       COALESCE(SUM(quantity), 0) AS q,
+                       COALESCE(SUM(quantity * purchase_price), 0) AS v
+                FROM medication_batches
+                WHERE branch_id = :b AND NOT is_deleted
+                GROUP BY status
+                """).bindparams(b=branch_id))).all()
+    agg: dict[str, tuple[int, Decimal, Decimal]] = {
+        r.status: (int(r.n), Decimal(r.q), Decimal(r.v)) for r in rows
+    }
+
+    by_status: dict[str, object] = {}
+    total_count = 0
+    total_value = Decimal(0)
+    locked_value = Decimal(0)
+    for status in _REPORT_STATUSES:
+        count, quantity, value = agg.get(status, (0, Decimal(0), Decimal(0)))
+        value = value.quantize(Decimal("0.01"))
+        by_status[status] = {
+            "count": count,
+            "total_quantity": str(quantity),
+            "total_value": str(value),
+        }
+        total_count += count
+        total_value += value
+        if status in _LOCKED_STATUSES:
+            locked_value += value
+    sellable_value = agg.get("active", (0, Decimal(0), Decimal(0)))[2].quantize(Decimal("0.01"))
+
+    return {
+        "branch_id": str(branch_id),
+        "by_status": by_status,
+        "sellable_value": str(sellable_value),
+        "locked_value": str(locked_value),
+        "totals": {"batch_count": total_count, "total_value": str(total_value)},
+    }
 
 
 async def list_branches_min(session: AsyncSession) -> list[dict[str, str]]:
