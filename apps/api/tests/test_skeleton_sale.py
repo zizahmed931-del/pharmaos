@@ -5,7 +5,6 @@ every change, smallest-unit storage, FEFO order, blocked-batch protection, and
 crash atomicity (nothing persists on failure)."""
 
 import datetime as dt
-import time
 import uuid
 from decimal import Decimal
 
@@ -127,13 +126,13 @@ async def _make_medication(
 
 async def test_scan_returns_default_level_fast(db_session: AsyncSession, branch: Branch) -> None:
     barcode, uid = await _make_medication(db_session, branch, batches=[("B1", 100, 300)])
-    start = time.perf_counter()
     result = await sales_service.resolve_barcode(db_session, barcode)
-    elapsed_ms = (time.perf_counter() - start) * 1000
     assert result.packaging_name_ar == "شريط" and result.level == 2
     assert result.selling_price == Decimal("30.00")
-    # Indexed exact match — must be far below the 50ms scan budget (allow CI slack).
-    assert elapsed_ms < 100, f"scan took {elapsed_ms:.1f}ms"
+    # The < 50ms scan target is guaranteed structurally by the exact-match
+    # barcode index (test_query_plans.py asserts the plan) and verified on the
+    # device (docs/pilot-checklist.md) — not via a wall-clock assert on
+    # shared/variable CI, which produces false failures.
 
 
 async def test_sale_deducts_fefo_and_writes_ledger(
