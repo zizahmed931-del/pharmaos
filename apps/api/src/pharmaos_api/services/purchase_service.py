@@ -54,6 +54,8 @@ class ReceiptLineIn:
     batch_number: str
     expiry_date: dt.date
     quantity: Decimal
+    gtin: str | None = None
+    serials: list[str] | None = None
 
 
 def _po_dict(po: PurchaseOrder) -> dict[str, object]:
@@ -324,6 +326,8 @@ async def receive(
             supplier_id=po.supplier_id,
             reference_type="purchase_order",
             reference_id=po.id,
+            gtin=line.gtin,
+            serials=line.serials,
         )
         item.qty_received = item.qty_received + line.quantity
 

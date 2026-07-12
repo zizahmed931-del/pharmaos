@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pharmaos_api.audit import AuditAction
 from pharmaos_api.errors import ApiError, ErrorCode
 from pharmaos_api.models import Branch, Medication, MedicationBatch, StockMovement, User
-from pharmaos_api.services import audit_service
+from pharmaos_api.services import audit_service, pack_serial_service
 
 _BATCH_STATUSES = {"active", "quarantined", "expired", "recalled", "depleted"}
 MAX_PAGE_SIZE = 100
@@ -55,6 +55,8 @@ async def receive_batch(
     supplier_id: uuid.UUID | None = None,
     reference_type: str = "manual",
     reference_id: uuid.UUID | None = None,
+    gtin: str | None = None,
+    serials: list[str] | None = None,
 ) -> MedicationBatch:
     """Core receiving primitive: batch row + purchase_in movement + cache delta
     in the CALLER's transaction (NO commit — the caller commits).
@@ -119,6 +121,11 @@ async def receive_batch(
         )
     )
     await apply_cache_delta(session, branch_id, medication_id, quantity)
+    # P2-M3: capture scanned 2D pack serials for this batch (EDA track & trace).
+    if serials:
+        await pack_serial_service.capture_received(
+            session, actor=actor, batch=batch, gtin=gtin or medication.gtin, serials=serials
+        )
     return batch
 
 
@@ -135,6 +142,8 @@ async def receive_stock(
     supplier_id: uuid.UUID | None = None,
     reference_type: str = "manual",
     reference_id: uuid.UUID | None = None,
+    gtin: str | None = None,
+    serials: list[str] | None = None,
 ) -> MedicationBatch:
     """Receive one batch as a standalone atomic operation (commits)."""
     batch = await receive_batch(
@@ -149,6 +158,8 @@ async def receive_stock(
         supplier_id=supplier_id,
         reference_type=reference_type,
         reference_id=reference_id,
+        gtin=gtin,
+        serials=serials,
     )
     await session.commit()
     await session.refresh(batch)

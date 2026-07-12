@@ -26,6 +26,7 @@ from pharmaos_api.errors import success_envelope
 from pharmaos_api.models import MedicationBatch, User
 from pharmaos_api.security.csrf import enforce_csrf
 from pharmaos_api.services import inventory_service as svc
+from pharmaos_api.services import pack_serial_service
 
 router = APIRouter(prefix="/api/v1", tags=["inventory"])
 
@@ -57,6 +58,9 @@ class ReceiveIn(BaseModel):
     quantity: Decimal = Field(gt=0, le=Decimal("1000000"))
     purchase_price: Decimal = Field(ge=0)
     supplier_id: uuid.UUID | None = None
+    # P2-M3: 2D-scanned pack serials + their GTIN (both optional).
+    gtin: str | None = Field(default=None, max_length=14)
+    serials: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class AdjustIn(BaseModel):
@@ -145,6 +149,8 @@ async def receive_stock(
         quantity=body.quantity,
         purchase_price=body.purchase_price,
         supplier_id=body.supplier_id,
+        gtin=body.gtin,
+        serials=body.serials,
     )
     return success_envelope(_batch(batch))
 
@@ -210,6 +216,26 @@ async def create_supplier(
 ) -> dict[str, object]:
     enforce_csrf(request)
     return success_envelope(await svc.create_supplier(session, actor=actor, name=body.name))
+
+
+@router.get("/inventory/serials")
+async def list_serials(
+    branch_id: uuid.UUID = Query(),
+    batch_id: uuid.UUID | None = Query(default=None),
+    status: str | None = Query(default=None, max_length=20),
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=pack_serial_service.MAX_PAGE_SIZE),
+    session: AsyncSession = Depends(get_session),
+    _: None = _view,
+) -> dict[str, object]:
+    """Pack serials for a branch (optionally scoped to a batch/status) — the 2D
+    track-and-trace trail captured at receive and linked at dispense."""
+    rows, total = await pack_serial_service.list_serials(
+        session, branch_id=branch_id, batch_id=batch_id, status=status, skip=skip, limit=limit
+    )
+    return success_envelope(
+        rows, meta={"page": skip // limit + 1, "total": total, "per_page": limit}
+    )
 
 
 @router.get("/inventory/drift")

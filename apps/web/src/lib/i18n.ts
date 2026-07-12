@@ -279,6 +279,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     'errors.E-STK-001': 'الكمية غير كافية في المخزون',
     'errors.E-STK-002': 'الدفعة منتهية الصلاحية — لا يمكن استلامها',
     'errors.E-CAT-001': 'الباركود مسجّل بالفعل',
+    'errors.E-TT-002': 'رقم تسلسلي مكرر للعبوة (GTIN + التسلسل) — منتج غير ممتثل',
     'errors.E-SYN-001': 'تعارض في رقم الفاتورة — أعد إتمام البيع',
     // POS (M8)
     'pos.title': 'نقطة البيع',
@@ -639,6 +640,7 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     'errors.E-STK-001': 'Insufficient stock',
     'errors.E-STK-002': 'Batch is expired — cannot receive',
     'errors.E-CAT-001': 'Barcode is already registered',
+    'errors.E-TT-002': 'Duplicate pack serial (GTIN + serial) — non-compliant product',
     'errors.E-SYN-001': 'Invoice number conflict — retry the sale',
     // POS (M8)
     'pos.title': 'Point of Sale',

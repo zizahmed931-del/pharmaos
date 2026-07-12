@@ -86,6 +86,8 @@ class SaleIn(BaseModel):
     payment_method: str = Field(default="cash", pattern="^(cash|card)$")
     # M10 — cash received from the customer (change persists on the invoice).
     tendered: Decimal | None = Field(default=None, ge=0, le=Decimal("10000000"))
+    # P2-M3: 2D-scanned pack serials dispensed in this sale (EDA track & trace).
+    serials: list[str] = Field(default_factory=list, max_length=1000)
 
 
 @router.post("/sale")
@@ -113,6 +115,7 @@ async def create_sale(
         cashier=current_user,
         payment_method=body.payment_method,
         tendered=body.tendered,
+        serials=body.serials,
     )
     items = (
         (await session.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)))

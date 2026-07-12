@@ -133,3 +133,28 @@ class InvoiceItem(MandatoryColumnsMixin, Base):
     qty_smallest: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+
+class PackSerial(MandatoryColumnsMixin, Base):
+    """Per-pack GS1 serial (P2-M3, EDA track & trace). Captured on receive
+    (in_stock), linked to an invoice on dispense. UNIQUE(gtin, serial_number)."""
+
+    __tablename__ = "pack_serials"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=False
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("medication_batches.id"), nullable=False
+    )
+    serial_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    gtin: Mapped[str] = mapped_column(String(14), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'in_stock'")
+    )
+    dispensed_invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+    )
+    tt_report_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'pending'")
+    )

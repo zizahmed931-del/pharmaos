@@ -36,7 +36,12 @@ from pharmaos_api.models import (
     StockMovement,
     User,
 )
-from pharmaos_api.services import audit_service, cashier_service, catalog_service
+from pharmaos_api.services import (
+    audit_service,
+    cashier_service,
+    catalog_service,
+    pack_serial_service,
+)
 
 
 @dataclass(frozen=True)
@@ -259,6 +264,7 @@ async def create_sale(
     cashier: User,
     payment_method: str = "cash",
     tendered: Decimal | None = None,
+    serials: list[str] | None = None,
 ) -> Invoice:
     """Create a completed sale invoice in ONE transaction (see module docstring).
 
@@ -417,6 +423,17 @@ async def create_sale(
         movement.reference_id = invoice.id
     session.add_all(pending_items)
     session.add_all(pending_movements)
+
+    # P2-M3: link scanned 2D pack serials to this invoice (dispensed) — atomic
+    # with the sale, so an unknown/already-dispensed serial rolls it ALL back.
+    if serials:
+        await pack_serial_service.link_dispensed(
+            session,
+            actor=cashier,
+            branch_id=branch_id,
+            invoice_id=invoice.id,
+            serials=serials,
+        )
 
     # Audit the sale IN THE SAME transaction (CLAUDE.md: audit from the first
     # write). If the commit fails, the audit entry rolls back with the sale.

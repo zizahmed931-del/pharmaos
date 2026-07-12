@@ -141,6 +141,9 @@ class ReceiptLineIn(BaseModel):
     batch_number: str = Field(min_length=1, max_length=50)
     expiry_date: date
     quantity: Decimal = Field(gt=0, le=_MAX)
+    # P2-M3: 2D-scanned pack serials + their GTIN (both optional).
+    gtin: str | None = Field(default=None, max_length=14)
+    serials: list[str] = Field(default_factory=list, max_length=1000)
 
 
 class ReceiveIn(BaseModel):
@@ -271,6 +274,8 @@ async def receive_order(
                 batch_number=line.batch_number,
                 expiry_date=line.expiry_date,
                 quantity=line.quantity,
+                gtin=line.gtin,
+                serials=line.serials,
             )
             for line in body.receipts
         ],
