@@ -19,10 +19,12 @@ import Link from 'next/link';
 import {
   ApiRequestError,
   createPosSale,
+  type CustomerSummary,
   getCurrentCashSession,
   getInvoiceReceipt,
   getMedication,
   type InvoiceReceipt,
+  listCustomers,
   listInventoryBranches,
   type MedOption,
   posScan,
@@ -57,6 +59,7 @@ interface DoneInfo {
   currency: string;
   change: string | null;
   paymentMethod: 'cash' | 'card';
+  pointsEarned: number | null;
 }
 
 type PrintState = 'idle' | 'printing' | 'ok' | 'unconfigured' | 'paper' | 'failed';
@@ -84,6 +87,7 @@ export default function PosPage() {
   const [resultIdx, setResultIdx] = useState(0);
   const [searching, setSearching] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [customer, setCustomer] = useState<CustomerSummary | null>(null);
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [printState, setPrintState] = useState<PrintState>('idle');
   const [receiptData, setReceiptData] = useState<InvoiceReceipt | null>(null);
@@ -287,6 +291,7 @@ export default function PosPage() {
     setCart([]);
     setSel(0);
     setDone(null);
+    setCustomer(null);
     setPrintState('idle');
     setReceiptData(null);
     setScanVal('');
@@ -621,6 +626,9 @@ export default function PosPage() {
         </CardContent>
       </Card>
 
+      {/* Customer (optional) — loyalty accrual + purchase history */}
+      <CustomerPicker customer={customer} onPick={setCustomer} onClear={() => setCustomer(null)} />
+
       {/* Totals + pay */}
       <div className="flex items-center justify-between rounded-[var(--radius-lg)] border border-border bg-white p-4">
         <div className="text-sm text-slate-500">
@@ -645,6 +653,7 @@ export default function PosPage() {
           cart={cart}
           clientTotal={clientTotal}
           currency={currency}
+          customerId={customer?.id ?? null}
           onClose={() => {
             setPayOpen(false);
             focusScan();
@@ -680,6 +689,12 @@ export default function PosPage() {
                 <span className="tabular-nums font-bold">
                   {done.change} {done.currency}
                 </span>
+              </p>
+            )}
+            {done.pointsEarned !== null && done.pointsEarned > 0 && (
+              <p className="mb-3 text-sm text-emerald-700">
+                ★ {t('pos.points_earned')}:{' '}
+                <span className="tabular-nums font-bold">{done.pointsEarned}</span>
               </p>
             )}
 
@@ -834,6 +849,80 @@ function PrintableReceipt({ receipt }: { receipt: InvoiceReceipt }) {
   );
 }
 
+// ------------------------------ customer picker (M5) ------------------------------
+
+function CustomerPicker({
+  customer,
+  onPick,
+  onClear,
+}: {
+  customer: CustomerSummary | null;
+  onPick: (c: CustomerSummary) => void;
+  onClear: () => void;
+}) {
+  const [term, setTerm] = useState('');
+  const [open, setOpen] = useState(false);
+  const searchQuery = useQuery({
+    queryKey: ['pos-customer-search', term],
+    queryFn: () => listCustomers({ search: term, activeOnly: true }),
+    enabled: open && term.trim().length >= 2,
+  });
+  const results = searchQuery.data ?? [];
+
+  if (customer) {
+    return (
+      <div className="flex items-center justify-between rounded-[var(--radius-lg)] border border-primary-200 bg-primary-50/60 p-3">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <span className="font-semibold text-slate-800">{customer.name}</span>
+          {customer.phone && <span className="text-slate-500">{customer.phone}</span>}
+          <Badge tone="primary">
+            {t('customers.points')}: {customer.loyalty_points}
+          </Badge>
+        </div>
+        <Button size="sm" variant="ghost" onClick={onClear}>
+          {t('pos.clear_customer')}
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-[var(--radius-lg)] border border-border bg-white p-3">
+      <Label className="text-xs text-slate-500">{t('pos.customer')}</Label>
+      <div className="relative mt-1">
+        <Input
+          value={term}
+          onChange={(e) => {
+            setTerm(e.target.value);
+            setOpen(true);
+          }}
+          placeholder={t('pos.search_customer')}
+        />
+        {open && term.trim().length >= 2 && results.length > 0 && (
+          <div className="absolute z-10 mt-1 max-h-48 w-full overflow-y-auto rounded-[var(--radius-md)] border border-border bg-white shadow-lg">
+            {results.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className="flex w-full items-center justify-between px-3 py-2 text-start text-sm hover:bg-primary-50"
+                onClick={() => {
+                  onPick(c);
+                  setTerm('');
+                  setOpen(false);
+                }}
+              >
+                <span className="text-slate-800">{c.name}</span>
+                <span className="text-xs text-slate-400">{c.phone ?? ''}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <p className="mt-1 text-xs text-slate-400">{t('pos.walk_in_hint')}</p>
+    </div>
+  );
+}
+
 // ------------------------------ payment modal ------------------------------
 
 function PaymentModal({
@@ -841,6 +930,7 @@ function PaymentModal({
   cart,
   clientTotal,
   currency,
+  customerId,
   onClose,
   onDone,
 }: {
@@ -848,6 +938,7 @@ function PaymentModal({
   cart: CartLine[];
   clientTotal: number;
   currency: string;
+  customerId: string | null;
   onClose: () => void;
   onDone: (info: DoneInfo) => void;
 }) {
@@ -866,6 +957,8 @@ function PaymentModal({
         payment_method: method,
         // M10 — persist the customer cash math on the invoice (cash only).
         ...(method === 'cash' && tendered ? { tendered: String(Number(tendered)) } : {}),
+        // M5 — attach the customer for loyalty accrual + purchase history.
+        ...(customerId ? { customer_id: customerId } : {}),
       }),
     onSuccess: (result: PosSaleResult) => {
       // Server change_amount is authoritative (M10); fall back to local math.
@@ -880,6 +973,7 @@ function PaymentModal({
         currency: result.currency_code,
         change,
         paymentMethod: method,
+        pointsEarned: result.points_earned,
       });
     },
     onError: (e) => toast.error(t(`errors.${errCode(e)}`)),

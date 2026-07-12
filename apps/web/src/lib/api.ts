@@ -527,6 +527,8 @@ export interface PosSaleResult {
   tendered_amount: string | null;
   change_amount: string | null;
   cash_session_id: string | null;
+  customer_id: string | null;
+  points_earned: number | null;
   items: PosSaleItem[];
 }
 
@@ -535,11 +537,104 @@ export function createPosSale(input: {
   lines: PosSaleLine[];
   payment_method: 'cash' | 'card';
   tendered?: string;
+  customer_id?: string;
 }) {
   return apiFetch<PosSaleResult>('/api/v1/pos/sale', {
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+// ---- Customers + loyalty (P2-M5) ----
+
+export interface CustomerSummary {
+  id: string;
+  name: string;
+  phone: string | null;
+  loyalty_points: number;
+  is_active: boolean;
+  has_national_id: boolean;
+  has_insurance_number: boolean;
+}
+
+export interface CustomerDetail extends CustomerSummary {
+  national_id: string | null;
+  insurance_number: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface NewCustomer {
+  name: string;
+  phone?: string | null;
+  national_id?: string | null;
+  insurance_number?: string | null;
+  notes?: string | null;
+}
+
+export interface LoyaltyTxn {
+  id: string;
+  points_delta: number;
+  txn_type: string;
+  reference_type: string | null;
+  reference_id: string | null;
+  reason: string | null;
+  created_at: string;
+}
+
+export interface CustomerHistoryRow {
+  invoice_id: string;
+  invoice_number: string;
+  created_at: string;
+  total: string;
+  currency_code: string;
+  status: string;
+}
+
+export function listCustomers(opts: { search?: string; activeOnly?: boolean } = {}) {
+  const params = new URLSearchParams({ limit: '100' });
+  if (opts.search) params.set('search', opts.search);
+  if (opts.activeOnly) params.set('active_only', 'true');
+  return apiFetch<CustomerSummary[]>(`/api/v1/customers?${params.toString()}`);
+}
+
+export function getCustomer(id: string) {
+  return apiFetch<CustomerDetail>(`/api/v1/customers/${id}`);
+}
+
+export function createCustomer(body: NewCustomer) {
+  return apiFetch<CustomerDetail>('/api/v1/customers', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateCustomer(id: string, patch: Partial<NewCustomer> & { is_active?: boolean }) {
+  return apiFetch<CustomerDetail>(`/api/v1/customers/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteCustomer(id: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/v1/customers/${id}`, { method: 'DELETE' });
+}
+
+export function listLoyalty(id: string) {
+  return apiFetch<{ balance: number; transactions: LoyaltyTxn[] }>(
+    `/api/v1/customers/${id}/loyalty`,
+  );
+}
+
+export function adjustLoyalty(id: string, pointsDelta: number, reason: string) {
+  return apiFetch<CustomerDetail>(`/api/v1/customers/${id}/loyalty`, {
+    method: 'POST',
+    body: JSON.stringify({ points_delta: pointsDelta, reason }),
+  });
+}
+
+export function customerHistory(id: string) {
+  return apiFetch<CustomerHistoryRow[]>(`/api/v1/customers/${id}/history`);
 }
 
 // ---- Cash sessions (P1-M10) ----
