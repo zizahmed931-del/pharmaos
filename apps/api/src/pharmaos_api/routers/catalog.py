@@ -42,6 +42,7 @@ def _med(m: Medication) -> dict[str, object]:
         "storage_conditions": m.storage_conditions,
         "eda_registration_no": m.eda_registration_no,
         "gtin": m.gtin,
+        "is_medicine": m.is_medicine,
         "is_active": m.is_active,
     }
 
@@ -82,6 +83,7 @@ class MedicationIn(BaseModel):
     storage_conditions: str | None = Field(default=None, max_length=100)
     eda_registration_no: str | None = Field(default=None, max_length=50)
     gtin: str | None = Field(default=None, min_length=14, max_length=14)
+    is_medicine: bool = True
     is_active: bool = True
 
 
@@ -97,6 +99,7 @@ class MedicationPatch(BaseModel):
     storage_conditions: str | None = Field(default=None, max_length=100)
     eda_registration_no: str | None = Field(default=None, max_length=50)
     gtin: str | None = Field(default=None, min_length=14, max_length=14)
+    is_medicine: bool | None = None
     is_active: bool | None = None
 
 

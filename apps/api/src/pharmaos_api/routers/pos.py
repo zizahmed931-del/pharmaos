@@ -136,6 +136,7 @@ async def create_sale(
             "invoice_number": invoice.invoice_number,
             "currency_code": invoice.currency_code,
             "subtotal": str(invoice.subtotal),
+            "tax_amount": str(invoice.tax_amount),
             "total": str(invoice.total),
             "payment_method": invoice.payment_method,
             "tendered_amount": (
@@ -182,6 +183,7 @@ def _receipt_json(r: receipt_service.InvoiceReceipt, *, thermal_ready: bool) -> 
         "currency_symbol": r.currency_symbol,
         "subtotal": str(r.subtotal),
         "discount": str(r.discount),
+        "tax": str(r.tax),
         "total": str(r.total),
         "tendered_amount": str(r.tendered) if r.tendered is not None else None,
         "change_amount": str(r.change_due) if r.change_due is not None else None,

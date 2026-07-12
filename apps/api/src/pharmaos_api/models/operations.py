@@ -137,6 +137,14 @@ class InvoiceItem(MandatoryColumnsMixin, Base):
     qty_smallest: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # P2-M6 — per-line VAT snapshot (prices are inclusive; tax_amount is the VAT
+    # extracted from line_total at tax_rate).
+    tax_rate: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, server_default=text("0")
+    )
+    tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default=text("0")
+    )
 
 
 class PackSerial(MandatoryColumnsMixin, Base):

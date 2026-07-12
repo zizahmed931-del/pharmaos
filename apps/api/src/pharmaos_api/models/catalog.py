@@ -31,6 +31,9 @@ class Medication(MandatoryColumnsMixin, Base):
     )
     eda_registration_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     gtin: Mapped[str | None] = mapped_column(String(14), nullable=True)
+    # P2-M6 — VAT classification: medicines follow the tax_profile's
+    # medicine_vat_rate (NULL = exempt); non-medicine SKUs use the standard rate.
+    is_medicine: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("TRUE"))
     # search_vector is a DB-generated column — intentionally not mapped.
 

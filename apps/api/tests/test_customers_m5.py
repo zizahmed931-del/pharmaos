@@ -124,15 +124,18 @@ async def test_update_reencrypts_and_can_clear(db_session: AsyncSession, actor: 
 
 async def test_search_by_arabic_name_and_phone(db_session: AsyncSession, actor: User) -> None:
     tag = uuid.uuid4().hex[:6]
+    # A digit-only phone token distinct from the names, so a phone search matches
+    # exactly one customer (a shared token would trigram-cross-match the names).
+    phone = f"0111{uuid.uuid4().int % 10**7:07d}"
     await customer_service.create_customer(
-        db_session, actor=actor, name=f"مصطفى {tag}", phone=f"0111{tag}"
+        db_session, actor=actor, name=f"مصطفى {tag}", phone=phone
     )
     await customer_service.create_customer(db_session, actor=actor, name=f"خالد {tag}")
 
     by_name, total_name = await customer_service.list_customers(db_session, search=f"مصطفى {tag}")
     assert total_name >= 1 and any(f"مصطفى {tag}" == r["name"] for r in by_name)
 
-    by_phone, total_phone = await customer_service.list_customers(db_session, search=f"0111{tag}")
+    by_phone, total_phone = await customer_service.list_customers(db_session, search=phone)
     assert total_phone == 1 and by_phone[0]["name"] == f"مصطفى {tag}"
     # List view never leaks PII.
     assert "national_id" not in by_phone[0]

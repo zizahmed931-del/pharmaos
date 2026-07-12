@@ -47,6 +47,7 @@ _MED_FIELDS = (
     "storage_conditions",
     "eda_registration_no",
     "gtin",
+    "is_medicine",
     "is_active",
 )
 

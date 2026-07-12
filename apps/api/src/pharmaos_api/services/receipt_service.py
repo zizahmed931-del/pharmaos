@@ -57,6 +57,7 @@ class InvoiceReceipt:
     currency_code: str
     subtotal: Decimal
     discount: Decimal
+    tax: Decimal
     total: Decimal
     tendered: Decimal | None
     change_due: Decimal | None
@@ -147,6 +148,7 @@ async def load_invoice_receipt(session: AsyncSession, invoice_id: uuid.UUID) -> 
         currency_code=invoice.currency_code,
         subtotal=invoice.subtotal,
         discount=invoice.discount_amount,
+        tax=invoice.tax_amount,
         total=invoice.total,
         tendered=invoice.tendered_amount,
         change_due=invoice.change_amount,
@@ -185,6 +187,7 @@ def to_escpos(receipt: InvoiceReceipt, *, open_drawer: bool) -> bytes:
             ],
             subtotal=receipt.subtotal,
             discount=receipt.discount,
+            tax=receipt.tax,
             total=receipt.total,
             currency_symbol=receipt.currency_symbol,
             thank_you_message=receipt.thank_you_message,

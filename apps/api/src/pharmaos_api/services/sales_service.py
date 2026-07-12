@@ -42,6 +42,7 @@ from pharmaos_api.services import (
     catalog_service,
     customer_service,
     pack_serial_service,
+    tax_service,
 )
 
 
@@ -56,6 +57,7 @@ class ScanResult:
     selling_price: Decimal
     requires_prescription: bool
     controlled_substance: bool
+    is_medicine: bool
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ def _scan_result(medication: Medication, packaging: MedicationPackaging) -> Scan
         selling_price=packaging.selling_price,
         requires_prescription=medication.requires_prescription,
         controlled_substance=medication.controlled_substance,
+        is_medicine=medication.is_medicine,
     )
 
 
@@ -287,7 +290,10 @@ async def create_sale(
     # (Egypt is UTC+2/+3 — a UTC date check would allow post-expiry sales
     # for a few hours after midnight).
     today = dt.date.today()
-    subtotal = Decimal("0.00")
+    # P2-M6 — the branch's VAT profile (via its country); None => 0% VAT.
+    tax_profile = await tax_service.resolve_for_branch(session, branch_id)
+    gross_total = Decimal("0.00")
+    tax_total = Decimal("0.00")
     pending_items: list[InvoiceItem] = []
     pending_movements: list[StockMovement] = []
 
@@ -329,7 +335,8 @@ async def create_sale(
             raise ApiError(code, 409)
 
         line_total = (line.quantity * scan.selling_price).quantize(Decimal("0.01"))
-        subtotal += line_total
+        gross_total += line_total
+        line_rate = tax_service.rate_for(tax_profile, is_medicine=scan.is_medicine)
         remaining = needed
         for batch in batches:
             if remaining <= 0:
@@ -343,6 +350,8 @@ async def create_sale(
             # Display quantity proportional to the slice (exact when one batch covers it).
             slice_display = (line.quantity * slice_qty / needed).quantize(Decimal("0.001"))
             slice_total = (line_total * slice_qty / needed).quantize(Decimal("0.01"))
+            _, slice_vat = tax_service.split_inclusive(slice_total, line_rate)
+            tax_total += slice_vat
             pending_items.append(
                 InvoiceItem(
                     branch_id=branch_id,
@@ -353,6 +362,8 @@ async def create_sale(
                     qty_smallest=slice_qty,
                     unit_price=scan.selling_price,
                     line_total=slice_total,
+                    tax_rate=line_rate,
+                    tax_amount=slice_vat,
                     created_by=cashier.id,
                 )
             )
@@ -371,7 +382,11 @@ async def create_sale(
 
             await apply_cache_delta(session, branch_id, scan.medication_id, -slice_qty)
 
-    total = subtotal  # discount 0 / tax 0 in the skeleton (tax profiles: Phase 2)
+    # P2-M6 — prices are VAT-INCLUSIVE: the customer total stays the sum of gross
+    # line prices; VAT is extracted into tax_amount and subtotal is the net.
+    total = gross_total
+    tax_amount = tax_total
+    net_subtotal = (gross_total - tax_total).quantize(Decimal("0.01"))
 
     # M10 — customer cash carry-through (validated against the AUTHORITATIVE total).
     tendered_amount: Decimal | None = None
@@ -397,9 +412,9 @@ async def create_sale(
         invoice_type="retail",
         status="completed",
         currency_code=branch.currency_code,
-        subtotal=subtotal,
+        subtotal=net_subtotal,
         discount_amount=Decimal("0.00"),
-        tax_amount=Decimal("0.00"),
+        tax_amount=tax_amount,
         total=total,
         payment_method=payment_method,
         cash_session_id=open_session.id if open_session is not None else None,

@@ -80,6 +80,8 @@ class ReceiptData:
     total: Decimal
     currency_symbol: str
     thank_you_message: str
+    # P2-M6 — VAT total (0 when exempt / no profile); rendered only when > 0.
+    tax: Decimal = Decimal("0")
     # P1-M9 — branch-settings driven header/footer
     address: str | None = None
     phone: str | None = None
@@ -141,6 +143,8 @@ def build_receipt(receipt: ReceiptData, *, open_drawer: bool = True) -> bytes:
     out += _amount_row("الإجمالي الفرعي", receipt.subtotal, receipt.currency_symbol)
     if receipt.discount:
         out += _amount_row("الخصم", receipt.discount, receipt.currency_symbol)
+    if receipt.tax:
+        out += _amount_row("ض.ق.م", receipt.tax, receipt.currency_symbol)
     out += BOLD_ON + DOUBLE_SIZE
     out += _amount_row("الإجمالي", receipt.total, receipt.currency_symbol)
     out += NORMAL_SIZE + BOLD_OFF
