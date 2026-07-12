@@ -16,7 +16,7 @@ from pharmaos_api.models.operations import (
     MedicationBatch,
     StockMovement,
 )
-from pharmaos_api.models.purchasing import Supplier
+from pharmaos_api.models.purchasing import PurchaseItem, PurchaseOrder, Supplier
 from pharmaos_api.models.rbac import Permission, Role, RolePermission
 from pharmaos_api.models.reference import Country, Currency
 from pharmaos_api.models.settings import Settings
@@ -38,6 +38,8 @@ __all__ = [
     "MedicationPackaging",
     "MedicationPriceHistory",
     "Permission",
+    "PurchaseItem",
+    "PurchaseOrder",
     "Role",
     "RolePermission",
     "Settings",

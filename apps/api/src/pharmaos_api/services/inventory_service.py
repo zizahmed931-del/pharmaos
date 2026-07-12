@@ -42,7 +42,7 @@ async def apply_cache_delta(
             """).bindparams(b=branch_id, m=medication_id, d=delta))
 
 
-async def receive_stock(
+async def receive_batch(
     session: AsyncSession,
     *,
     actor: User,
@@ -53,8 +53,16 @@ async def receive_stock(
     quantity: Decimal,
     purchase_price: Decimal,
     supplier_id: uuid.UUID | None = None,
+    reference_type: str = "manual",
+    reference_id: uuid.UUID | None = None,
 ) -> MedicationBatch:
-    """Receive a batch: batch row + purchase_in movement + cache delta — one tx."""
+    """Core receiving primitive: batch row + purchase_in movement + cache delta
+    in the CALLER's transaction (NO commit — the caller commits).
+
+    reference_type/reference_id link the movement to its source (e.g. a
+    purchase_order), so goods-receipt against a PO is auditable through the same
+    stock_movements ledger. Reused by receive_stock (standalone) and by the
+    purchase-order receive flow (many lines, one commit)."""
     if quantity <= 0:
         raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Quantity must be positive.")
     if purchase_price < 0:
@@ -105,11 +113,43 @@ async def receive_stock(
             batch_id=batch.id,
             movement_type="purchase_in",
             quantity_delta=quantity,
-            reference_type="manual",
+            reference_type=reference_type,
+            reference_id=reference_id,
             created_by=actor.id,
         )
     )
     await apply_cache_delta(session, branch_id, medication_id, quantity)
+    return batch
+
+
+async def receive_stock(
+    session: AsyncSession,
+    *,
+    actor: User,
+    branch_id: uuid.UUID,
+    medication_id: uuid.UUID,
+    batch_number: str,
+    expiry_date: dt.date,
+    quantity: Decimal,
+    purchase_price: Decimal,
+    supplier_id: uuid.UUID | None = None,
+    reference_type: str = "manual",
+    reference_id: uuid.UUID | None = None,
+) -> MedicationBatch:
+    """Receive one batch as a standalone atomic operation (commits)."""
+    batch = await receive_batch(
+        session,
+        actor=actor,
+        branch_id=branch_id,
+        medication_id=medication_id,
+        batch_number=batch_number,
+        expiry_date=expiry_date,
+        quantity=quantity,
+        purchase_price=purchase_price,
+        supplier_id=supplier_id,
+        reference_type=reference_type,
+        reference_id=reference_id,
+    )
     await session.commit()
     await session.refresh(batch)
     return batch
