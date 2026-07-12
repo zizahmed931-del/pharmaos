@@ -69,18 +69,21 @@ async def _create(client: httpx.AsyncClient, csrf: str, **overrides: object) -> 
 
 async def test_create_list_get_supplier(admin):  # type: ignore[no-untyped-def]
     client, csrf = admin
-    made = await _create(client, csrf)
+    unique = uuid.uuid4().hex[:8]
+    made = await _create(client, csrf, name=f"{_FULL['name']} {unique}")
     assert made.status_code == 200, made.text
     data = made.json()["data"]
     supplier_id = data["id"]
-    assert data["name"] == _FULL["name"]
+    assert data["name"] == f"{_FULL['name']} {unique}"
     assert data["tax_registration_no"] == "123-456-789"
     assert data["is_active"] is True
 
-    listed = await client.get("/api/v1/purchases/suppliers")
+    # Search by the unique tag so the membership check is robust to the paginated
+    # list (default limit 50, ordered is_active DESC then name).
+    listed = await client.get("/api/v1/purchases/suppliers", params={"search": unique})
     assert listed.status_code == 200, listed.text
-    assert listed.json()["meta"]["total"] >= 1
-    assert any(s["id"] == supplier_id for s in listed.json()["data"])
+    assert listed.json()["meta"]["total"] == 1
+    assert listed.json()["data"][0]["id"] == supplier_id
 
     got = await client.get(f"/api/v1/purchases/suppliers/{supplier_id}")
     assert got.status_code == 200
@@ -102,8 +105,12 @@ async def test_update_and_deactivate(admin):  # type: ignore[no-untyped-def]
 
     active = await client.get("/api/v1/purchases/suppliers", params={"active_only": True})
     assert all(s["id"] != supplier_id for s in active.json()["data"])
-    everyone = await client.get("/api/v1/purchases/suppliers")
-    assert any(s["id"] == supplier_id for s in everyone.json()["data"])
+    # Still exists (soft-deactivated, not removed) — fetch by id. An inactive
+    # supplier sorts last and can fall off the paginated default list once enough
+    # active suppliers exist, so a page scan here would be a latent flake.
+    fetched = await client.get(f"/api/v1/purchases/suppliers/{supplier_id}")
+    assert fetched.status_code == 200
+    assert fetched.json()["data"]["is_active"] is False
 
 
 async def test_search_filter(admin):  # type: ignore[no-untyped-def]
