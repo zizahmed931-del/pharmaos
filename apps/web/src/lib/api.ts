@@ -403,6 +403,67 @@ export function rebuildCache(branchId: string) {
   });
 }
 
+// ---- Batch tracking (P2-M4): expiry alerts, batch report, expiry sweep ----
+
+export type ExpiryBucketKey = 'expired' | 'within_30' | 'within_60' | 'within_90';
+export type AlertSeverity = 'danger' | 'critical' | 'warning';
+
+export interface ExpiryAlertBatch {
+  batch_id: string;
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  batch_number: string;
+  expiry_date: string;
+  days_left: number;
+  quantity: string;
+  purchase_price: string;
+  value: string;
+}
+
+export interface ExpiryBucket {
+  severity: AlertSeverity;
+  count: number;
+  total_quantity: string;
+  total_value: string;
+  batches: ExpiryAlertBatch[];
+}
+
+export interface ExpiryAlerts {
+  as_of: string;
+  windows: { critical_days: number; mid_days: number; warning_days: number };
+  buckets: Record<ExpiryBucketKey, ExpiryBucket>;
+  totals: { count: number; total_quantity: string; total_value: string };
+}
+
+export function getExpiryAlerts(branchId: string) {
+  return apiFetch<ExpiryAlerts>(`/api/v1/inventory/expiry-alerts?branch_id=${branchId}`);
+}
+
+export type BatchStatus = 'active' | 'quarantined' | 'expired' | 'recalled' | 'depleted';
+
+export interface BatchStatusCount {
+  count: number;
+  total_quantity: string;
+  total_value: string;
+}
+
+export interface BatchReport {
+  branch_id: string;
+  by_status: Record<BatchStatus, BatchStatusCount>;
+  sellable_value: string;
+  locked_value: string;
+  totals: { batch_count: number; total_value: string };
+}
+
+export function getBatchReport(branchId: string) {
+  return apiFetch<BatchReport>(`/api/v1/inventory/batch-report?branch_id=${branchId}`);
+}
+
+export function runExpirySweep() {
+  return apiFetch<{ swept: number }>('/api/v1/inventory/expiry-sweep', { method: 'POST' });
+}
+
 export interface MedOption {
   id: string;
   trade_name: string;

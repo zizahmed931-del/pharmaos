@@ -18,8 +18,11 @@ import {
   adjustBatch,
   ApiRequestError,
   type Batch,
+  type BatchStatus,
   checkDrift,
   createSupplier,
+  getBatchReport,
+  getExpiryAlerts,
   type InventoryRow,
   listBatches,
   listInventory,
@@ -29,6 +32,7 @@ import {
   parseGs1,
   rebuildCache,
   receiveStock,
+  runExpirySweep,
   searchMedications,
   setBatchStatus,
 } from '@/lib/api';
@@ -51,13 +55,8 @@ const statusLabel = (s: string) => t(`inventory.status_${s}`);
 export default function InventoryPage() {
   const canReceive = useAuth((s) => s.hasPermission('inventory.purchase'));
   const canAdjust = useAuth((s) => s.hasPermission('inventory.adjust'));
-
+  const [tab, setTab] = useState<'stock' | 'expiry' | 'report'>('stock');
   const [branchId, setBranchId] = useState('');
-  const [search, setSearch] = useState('');
-  const [query, setQuery] = useState('');
-  const [lowStock, setLowStock] = useState(false);
-  const [showReceive, setShowReceive] = useState(false);
-  const [batchesFor, setBatchesFor] = useState<{ id: string; name: string } | null>(null);
 
   const branchesQuery = useQuery({ queryKey: ['inv-branches'], queryFn: listInventoryBranches });
   const branches = branchesQuery.data ?? [];
@@ -65,17 +64,6 @@ export default function InventoryPage() {
     const first = branches[0];
     if (!branchId && first) setBranchId(first.id);
   }, [branches, branchId]);
-
-  const invQuery = useQuery({
-    queryKey: ['inventory', branchId, query, lowStock],
-    queryFn: () => listInventory(branchId, { search: query, lowStock }),
-    enabled: !!branchId,
-  });
-  const driftQuery = useQuery({
-    queryKey: ['drift', branchId],
-    queryFn: () => checkDrift(branchId),
-    enabled: !!branchId,
-  });
 
   if (branchesQuery.isLoading) {
     return (
@@ -88,28 +76,101 @@ export default function InventoryPage() {
     return <p className="py-10 text-center text-slate-500">{t('inventory.no_branch')}</p>;
   }
 
-  const rows = invQuery.data ?? [];
-
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold text-slate-900">{t('inventory.title')}</h1>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Label className="text-xs">{t('inventory.branch')}</Label>
-            <Select className="h-9" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </Select>
-          </div>
-          {canReceive && (
-            <Button onClick={() => setShowReceive(true)}>{t('inventory.receive')}</Button>
-          )}
+        <div className="flex items-center gap-2">
+          <Label className="text-xs">{t('inventory.branch')}</Label>
+          <Select className="h-9" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </Select>
         </div>
       </div>
+
+      <div className="flex gap-1 border-b border-border">
+        <TabButton active={tab === 'stock'} onClick={() => setTab('stock')}>
+          {t('inventory.tab_stock')}
+        </TabButton>
+        <TabButton active={tab === 'expiry'} onClick={() => setTab('expiry')}>
+          {t('inventory.tab_expiry')}
+        </TabButton>
+        <TabButton active={tab === 'report'} onClick={() => setTab('report')}>
+          {t('inventory.tab_report')}
+        </TabButton>
+      </div>
+
+      {tab === 'stock' && (
+        <StockTab branchId={branchId} canReceive={canReceive} canAdjust={canAdjust} />
+      )}
+      {tab === 'expiry' && <ExpiryAlertsTab branchId={branchId} canAdjust={canAdjust} />}
+      {tab === 'report' && <BatchReportTab branchId={branchId} />}
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'border-b-2 px-4 py-2 text-sm font-semibold transition-colors ' +
+        (active ? 'border-primary-600 text-primary-700' : 'border-transparent text-slate-500')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function StockTab({
+  branchId,
+  canReceive,
+  canAdjust,
+}: {
+  branchId: string;
+  canReceive: boolean;
+  canAdjust: boolean;
+}) {
+  const [search, setSearch] = useState('');
+  const [query, setQuery] = useState('');
+  const [lowStock, setLowStock] = useState(false);
+  const [showReceive, setShowReceive] = useState(false);
+  const [batchesFor, setBatchesFor] = useState<{ id: string; name: string } | null>(null);
+
+  const invQuery = useQuery({
+    queryKey: ['inventory', branchId, query, lowStock],
+    queryFn: () => listInventory(branchId, { search: query, lowStock }),
+    enabled: !!branchId,
+  });
+  const driftQuery = useQuery({
+    queryKey: ['drift', branchId],
+    queryFn: () => checkDrift(branchId),
+    enabled: !!branchId,
+  });
+
+  const rows = invQuery.data ?? [];
+
+  return (
+    <div className="space-y-6">
+      {canReceive && (
+        <div className="flex justify-end">
+          <Button onClick={() => setShowReceive(true)}>{t('inventory.receive')}</Button>
+        </div>
+      )}
 
       <IntegrityBar branchId={branchId} canAdjust={canAdjust} report={driftQuery.data} />
 
@@ -702,5 +763,219 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
         </div>
       </form>
     </Modal>
+  );
+}
+
+// ------------------------------ expiry alerts (P2-M4) ------------------------------
+
+const SEV_TONE: Record<string, 'danger' | 'warning'> = {
+  danger: 'danger',
+  critical: 'danger',
+  warning: 'warning',
+};
+
+const ALERT_BUCKETS = ['expired', 'within_30', 'within_60', 'within_90'] as const;
+
+function ExpiryAlertsTab({ branchId, canAdjust }: { branchId: string; canAdjust: boolean }) {
+  const qc = useQueryClient();
+  const alertsQuery = useQuery({
+    queryKey: ['expiry-alerts', branchId],
+    queryFn: () => getExpiryAlerts(branchId),
+    enabled: !!branchId,
+  });
+  const sweep = useMutation({
+    mutationFn: runExpirySweep,
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['expiry-alerts', branchId] });
+      qc.invalidateQueries({ queryKey: ['inventory', branchId] });
+      qc.invalidateQueries({ queryKey: ['batches', branchId] });
+      qc.invalidateQueries({ queryKey: ['batch-report', branchId] });
+      qc.invalidateQueries({ queryKey: ['drift', branchId] });
+      toast.success(`${t('inventory.swept_ok')} (${data.swept})`);
+    },
+    onError: onErr,
+  });
+
+  if (alertsQuery.isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Spinner />
+      </div>
+    );
+  }
+  const data = alertsQuery.data;
+  if (!data) return null;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-500">
+          {t('inventory.expiry_as_of')}: <span className="tabular-nums">{data.as_of}</span>
+        </p>
+        {canAdjust && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => sweep.mutate()}
+            disabled={sweep.isPending}
+          >
+            {t('inventory.run_sweep')}
+          </Button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {ALERT_BUCKETS.map((key) => {
+          const bucket = data.buckets[key];
+          return (
+            <Card key={key}>
+              <CardContent className="space-y-2 pt-5">
+                <div className="text-xs text-slate-500">{t(`inventory.bucket_${key}`)}</div>
+                <div className="text-2xl font-bold tabular-nums text-slate-900">{bucket.count}</div>
+                <Badge tone={SEV_TONE[bucket.severity] ?? 'neutral'}>
+                  {t(`inventory.severity_${bucket.severity}`)}
+                </Badge>
+                <div className="text-xs text-slate-500">
+                  {t('inventory.value')}: <span className="tabular-nums">{bucket.total_value}</span>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+
+      {data.totals.count === 0 ? (
+        <p className="py-6 text-center text-sm text-slate-500">{t('inventory.no_alerts')}</p>
+      ) : (
+        ALERT_BUCKETS.map((key) => {
+          const bucket = data.buckets[key];
+          if (bucket.count === 0) return null;
+          return (
+            <Card key={key}>
+              <CardContent className="pt-6">
+                <div className="mb-3 flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-slate-800">
+                    {t(`inventory.bucket_${key}`)}
+                  </h2>
+                  <Badge tone={SEV_TONE[bucket.severity] ?? 'neutral'}>{bucket.count}</Badge>
+                </div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-xs text-slate-500">
+                      <th className="p-2 text-start">{t('inventory.medication')}</th>
+                      <th className="p-2 text-start">{t('inventory.batch_number')}</th>
+                      <th className="p-2 text-start">{t('inventory.expiry')}</th>
+                      <th className="p-2 text-start">{t('inventory.days_left')}</th>
+                      <th className="p-2 text-start">{t('inventory.quantity')}</th>
+                      <th className="p-2 text-start">{t('inventory.value')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bucket.batches.map((b) => (
+                      <tr key={b.batch_id} className="border-b border-border/60">
+                        <td className="p-2 font-medium text-slate-800">
+                          {b.trade_name_ar ?? b.trade_name}
+                        </td>
+                        <td className="p-2 font-mono text-slate-600">{b.batch_number}</td>
+                        <td className="p-2 tabular-nums text-slate-600">{b.expiry_date}</td>
+                        <td className="p-2 tabular-nums text-slate-600">{b.days_left}</td>
+                        <td className="p-2 tabular-nums text-slate-800">{fmt(b.quantity)}</td>
+                        <td className="p-2 tabular-nums text-slate-800">{b.value}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+// ------------------------------ batch report (P2-M4) ------------------------------
+
+const REPORT_STATUSES: BatchStatus[] = ['active', 'quarantined', 'expired', 'recalled', 'depleted'];
+
+function BatchReportTab({ branchId }: { branchId: string }) {
+  const reportQuery = useQuery({
+    queryKey: ['batch-report', branchId],
+    queryFn: () => getBatchReport(branchId),
+    enabled: !!branchId,
+  });
+  if (reportQuery.isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Spinner />
+      </div>
+    );
+  }
+  const data = reportQuery.data;
+  if (!data) return null;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <KpiCard label={t('inventory.sellable_value')} value={data.sellable_value} tone="success" />
+        <KpiCard label={t('inventory.locked_value')} value={data.locked_value} tone="danger" />
+        <KpiCard
+          label={t('inventory.total_batches')}
+          value={String(data.totals.batch_count)}
+          tone="neutral"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="pt-6">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-slate-500">
+                <th className="p-2 text-start">{t('inventory.report_status')}</th>
+                <th className="p-2 text-start">{t('inventory.report_count')}</th>
+                <th className="p-2 text-start">{t('inventory.report_qty')}</th>
+                <th className="p-2 text-start">{t('inventory.report_value')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {REPORT_STATUSES.map((s) => {
+                const row = data.by_status[s];
+                return (
+                  <tr key={s} className="border-b border-border/60">
+                    <td className="p-2">
+                      <Badge tone={STATUS_TONE[s] ?? 'neutral'}>{statusLabel(s)}</Badge>
+                    </td>
+                    <td className="p-2 tabular-nums text-slate-800">{row.count}</td>
+                    <td className="p-2 tabular-nums text-slate-800">{fmt(row.total_quantity)}</td>
+                    <td className="p-2 tabular-nums text-slate-800">{row.total_value}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function KpiCard({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: string;
+  tone: 'success' | 'danger' | 'neutral';
+}) {
+  const color =
+    tone === 'success' ? 'text-emerald-700' : tone === 'danger' ? 'text-red-700' : 'text-slate-900';
+  return (
+    <Card>
+      <CardContent className="space-y-1 pt-5">
+        <div className="text-xs text-slate-500">{label}</div>
+        <div className={'text-2xl font-bold tabular-nums ' + color}>{value}</div>
+      </CardContent>
+    </Card>
   );
 }
