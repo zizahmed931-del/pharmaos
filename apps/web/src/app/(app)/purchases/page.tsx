@@ -1,18 +1,614 @@
 'use client';
 
-import { Badge, Button, Card, CardContent, Input, Label, Modal, Spinner } from '@pharmaos/ui';
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  Input,
+  Label,
+  Modal,
+  Select,
+  Spinner,
+} from '@pharmaos/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import {
   ApiRequestError,
+  createPurchaseOrder,
   createPurchaseSupplier,
+  getMedication,
+  getPurchaseOrder,
+  listInventoryBranches,
+  listPurchaseOrders,
   listPurchaseSuppliers,
+  purchaseOrderAction,
+  receivePurchaseOrder,
+  searchMedications,
   updatePurchaseSupplier,
+  type MedOption,
+  type PackagingLevel,
+  type PurchaseOrder,
   type SupplierDetail,
 } from '@/lib/api';
 import { t } from '@/lib/i18n';
 import { toast } from '@/lib/toast-store';
+
+export default function PurchasesPage() {
+  const [tab, setTab] = useState<'orders' | 'suppliers'>('orders');
+  return (
+    <div className="mx-auto max-w-6xl space-y-6">
+      <div className="flex gap-1 border-b border-border">
+        <TabButton active={tab === 'orders'} onClick={() => setTab('orders')}>
+          {t('po.tab_orders')}
+        </TabButton>
+        <TabButton active={tab === 'suppliers'} onClick={() => setTab('suppliers')}>
+          {t('po.tab_suppliers')}
+        </TabButton>
+      </div>
+      {tab === 'orders' ? <OrdersTab /> : <SuppliersTab />}
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        'border-b-2 px-4 py-2 text-sm font-semibold transition-colors ' +
+        (active ? 'border-primary-600 text-primary-700' : 'border-transparent text-slate-500')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+// ================================ Orders ================================
+
+const STATUS_TONE: Record<string, 'neutral' | 'warning' | 'primary' | 'success' | 'danger'> = {
+  draft: 'neutral',
+  pending_approval: 'warning',
+  approved: 'primary',
+  partially_received: 'warning',
+  received: 'success',
+  cancelled: 'danger',
+};
+
+function OrderStatusBadge({ status }: { status: string }) {
+  return <Badge tone={STATUS_TONE[status] ?? 'neutral'}>{t(`po.status_${status}`)}</Badge>;
+}
+
+function OrdersTab() {
+  const qc = useQueryClient();
+  const [branchId, setBranchId] = useState('');
+  const [showCreate, setShowCreate] = useState(false);
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  const branchesQuery = useQuery({ queryKey: ['inv-branches'], queryFn: listInventoryBranches });
+  useEffect(() => {
+    const first = branchesQuery.data?.[0];
+    if (!branchId && first) setBranchId(first.id);
+  }, [branchId, branchesQuery.data]);
+
+  const suppliersQuery = useQuery({
+    queryKey: ['po-suppliers-active'],
+    queryFn: () => listPurchaseSuppliers({ activeOnly: true }),
+  });
+  const ordersQuery = useQuery({
+    queryKey: ['po-orders', branchId],
+    queryFn: () => listPurchaseOrders({ branch_id: branchId }),
+    enabled: !!branchId,
+  });
+  const invalidate = () => qc.invalidateQueries({ queryKey: ['po-orders'] });
+  const supplierName = (id: string) =>
+    suppliersQuery.data?.find((s) => s.id === id)?.name ?? id.slice(0, 8);
+
+  const branches = branchesQuery.data ?? [];
+  if (branchesQuery.isLoading) {
+    return (
+      <div className="flex justify-center py-8">
+        <Spinner />
+      </div>
+    );
+  }
+  if (branches.length === 0) {
+    return <p className="py-8 text-center text-sm text-slate-500">{t('po.no_branch')}</p>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Label>{t('po.branch')}</Label>
+          <Select value={branchId} onChange={(e) => setBranchId(e.target.value)} className="h-9">
+            {branches.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <Button onClick={() => setShowCreate(true)}>{t('po.new')}</Button>
+      </div>
+
+      <Card>
+        <CardContent className="pt-6">
+          {ordersQuery.isLoading ? (
+            <div className="flex justify-center py-8">
+              <Spinner />
+            </div>
+          ) : (
+            <OrdersTable
+              rows={ordersQuery.data ?? []}
+              supplierName={supplierName}
+              onOpen={setDetailId}
+            />
+          )}
+        </CardContent>
+      </Card>
+
+      {showCreate && (
+        <CreateOrderModal
+          branchId={branchId}
+          suppliers={suppliersQuery.data ?? []}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => {
+            setShowCreate(false);
+            invalidate();
+            toast.success(t('po.created_ok'));
+          }}
+        />
+      )}
+
+      {detailId && (
+        <OrderDetailModal
+          poId={detailId}
+          onClose={() => setDetailId(null)}
+          onChanged={invalidate}
+        />
+      )}
+    </div>
+  );
+}
+
+function OrdersTable({
+  rows,
+  supplierName,
+  onOpen,
+}: {
+  rows: PurchaseOrder[];
+  supplierName: (id: string) => string;
+  onOpen: (id: string) => void;
+}) {
+  if (rows.length === 0) {
+    return <p className="py-8 text-center text-sm text-slate-500">{t('po.empty')}</p>;
+  }
+  return (
+    <table className="w-full text-start text-sm">
+      <thead>
+        <tr className="border-b border-border text-start text-xs text-slate-500">
+          <th className="p-2 text-start">{t('po.number')}</th>
+          <th className="p-2 text-start">{t('po.supplier')}</th>
+          <th className="p-2 text-start">{t('po.status')}</th>
+          <th className="p-2 text-start">{t('po.total')}</th>
+          <th className="p-2 text-start">{t('po.actions')}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((po) => (
+          <tr key={po.id} className="border-b border-border/60">
+            <td className="numeric p-2 font-medium text-slate-800">{po.po_number}</td>
+            <td className="p-2 text-slate-700">{supplierName(po.supplier_id)}</td>
+            <td className="p-2">
+              <OrderStatusBadge status={po.status} />
+            </td>
+            <td className="numeric p-2 text-slate-700">
+              {po.total} {po.currency_code}
+            </td>
+            <td className="p-2">
+              <Button size="sm" variant="ghost" onClick={() => onOpen(po.id)}>
+                {t('po.open')}
+              </Button>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+interface LineDraft {
+  uid: string;
+  medication_id: string;
+  label: string;
+  packaging: PackagingLevel[];
+  packaging_id: string;
+  qty: string;
+  cost: string;
+}
+
+function CreateOrderModal({
+  branchId,
+  suppliers,
+  onClose,
+  onCreated,
+}: {
+  branchId: string;
+  suppliers: SupplierDetail[];
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const [supplierId, setSupplierId] = useState(suppliers[0]?.id ?? '');
+  const [expectedDate, setExpectedDate] = useState('');
+  const [notes, setNotes] = useState('');
+  const [lines, setLines] = useState<LineDraft[]>([]);
+  const [medTerm, setMedTerm] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const medQuery = useQuery({
+    queryKey: ['po-med-search', medTerm],
+    queryFn: () => searchMedications(medTerm),
+    enabled: medTerm.trim().length >= 2,
+  });
+
+  const addLineMut = useMutation({
+    mutationFn: (m: MedOption) => getMedication(m.id),
+    onSuccess: (detail, m) => {
+      const def = detail.packaging.find((p) => p.is_default_sale) ?? detail.packaging[0];
+      if (!def) {
+        toast.error(t('po.no_results'));
+        return;
+      }
+      setLines((prev) => [
+        ...prev,
+        {
+          uid: crypto.randomUUID(),
+          medication_id: m.id,
+          label: m.trade_name_ar ?? m.trade_name,
+          packaging: detail.packaging,
+          packaging_id: def.id,
+          qty: '',
+          cost: '',
+        },
+      ]);
+      setMedTerm('');
+    },
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
+  });
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      createPurchaseOrder({
+        branch_id: branchId,
+        supplier_id: supplierId,
+        expected_date: expectedDate || null,
+        notes: notes || null,
+        lines: lines.map((l) => ({
+          medication_id: l.medication_id,
+          packaging_id: l.packaging_id,
+          qty_ordered: l.qty,
+          unit_cost: l.cost,
+        })),
+      }),
+    onSuccess: onCreated,
+    onError: (e) => setError(e instanceof ApiRequestError ? e.code : 'E-SYS-001'),
+  });
+
+  const updateLine = (uid: string, patch: Partial<LineDraft>) =>
+    setLines((prev) => prev.map((l) => (l.uid === uid ? { ...l, ...patch } : l)));
+  const removeLine = (uid: string) => setLines((prev) => prev.filter((l) => l.uid !== uid));
+
+  const canSubmit =
+    supplierId !== '' &&
+    lines.length > 0 &&
+    lines.every((l) => Number(l.qty) > 0 && l.cost !== '' && Number(l.cost) >= 0);
+
+  return (
+    <Modal open onClose={onClose} title={t('po.new')} className="max-w-3xl">
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <Field label={t('po.supplier')}>
+            <Select value={supplierId} onChange={(e) => setSupplierId(e.target.value)}>
+              <option value="">—</option>
+              {suppliers.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t('po.expected_date')}>
+            <Input
+              type="date"
+              value={expectedDate}
+              onChange={(e) => setExpectedDate(e.target.value)}
+            />
+          </Field>
+          <Field label={t('po.notes')}>
+            <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+          </Field>
+        </div>
+
+        <div className="space-y-2">
+          <Label>{t('po.add_line')}</Label>
+          <Input
+            placeholder={t('po.search_med')}
+            value={medTerm}
+            onChange={(e) => setMedTerm(e.target.value)}
+          />
+          {medTerm.trim().length >= 2 && (
+            <div className="max-h-40 overflow-auto rounded-[var(--radius-md)] border border-border">
+              {(medQuery.data ?? []).length === 0 ? (
+                <p className="p-2 text-xs text-slate-500">{t('po.no_results')}</p>
+              ) : (
+                (medQuery.data ?? []).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => addLineMut.mutate(m)}
+                    className="block w-full px-3 py-1.5 text-start text-sm hover:bg-primary-50"
+                  >
+                    {m.trade_name_ar ?? m.trade_name}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </div>
+
+        {lines.length > 0 && (
+          <table className="w-full text-start text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-slate-500">
+                <th className="p-2 text-start">{t('po.medication')}</th>
+                <th className="p-2 text-start">{t('po.packaging')}</th>
+                <th className="p-2 text-start">{t('po.qty_ordered')}</th>
+                <th className="p-2 text-start">{t('po.unit_cost')}</th>
+                <th className="p-2" />
+              </tr>
+            </thead>
+            <tbody>
+              {lines.map((l) => (
+                <tr key={l.uid} className="border-b border-border/60">
+                  <td className="p-2 text-slate-800">{l.label}</td>
+                  <td className="p-2">
+                    <Select
+                      className="h-8"
+                      value={l.packaging_id}
+                      onChange={(e) => updateLine(l.uid, { packaging_id: e.target.value })}
+                    >
+                      {l.packaging.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name_ar}
+                        </option>
+                      ))}
+                    </Select>
+                  </td>
+                  <td className="p-2">
+                    <Input
+                      className="numeric h-8 w-24"
+                      value={l.qty}
+                      onChange={(e) => updateLine(l.uid, { qty: e.target.value })}
+                    />
+                  </td>
+                  <td className="p-2">
+                    <Input
+                      className="numeric h-8 w-24"
+                      value={l.cost}
+                      onChange={(e) => updateLine(l.uid, { cost: e.target.value })}
+                    />
+                  </td>
+                  <td className="p-2">
+                    <Button size="sm" variant="ghost" onClick={() => removeLine(l.uid)}>
+                      {t('po.remove')}
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {error && <p className="text-sm text-danger">{t(`errors.${error}`)}</p>}
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="outline" onClick={onClose}>
+            {t('po.cancel')}
+          </Button>
+          <Button
+            type="button"
+            disabled={createMut.isPending}
+            onClick={() => {
+              if (!canSubmit) {
+                setError('E-VAL-001');
+                return;
+              }
+              setError(null);
+              createMut.mutate();
+            }}
+          >
+            {createMut.isPending ? t('po.creating') : t('po.create')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+type ReceiptRow = { batch: string; expiry: string; qty: string };
+
+function OrderDetailModal({
+  poId,
+  onClose,
+  onChanged,
+}: {
+  poId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const qc = useQueryClient();
+  const [receiving, setReceiving] = useState(false);
+  const [rows, setRows] = useState<Record<string, ReceiptRow>>({});
+  const detailQuery = useQuery({
+    queryKey: ['po-detail', poId],
+    queryFn: () => getPurchaseOrder(poId),
+  });
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['po-detail', poId] });
+    onChanged();
+  };
+
+  const actionMut = useMutation({
+    mutationFn: (action: 'submit' | 'approve' | 'cancel') => purchaseOrderAction(poId, action),
+    onSuccess: () => {
+      refresh();
+      toast.success(t('po.action_ok'));
+    },
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
+  });
+  const receiveMut = useMutation({
+    mutationFn: () =>
+      receivePurchaseOrder(
+        poId,
+        Object.entries(rows)
+          .filter(([, v]) => Number(v.qty) > 0)
+          .map(([itemId, v]) => ({
+            purchase_item_id: itemId,
+            batch_number: v.batch,
+            expiry_date: v.expiry,
+            quantity: v.qty,
+          })),
+      ),
+    onSuccess: () => {
+      setReceiving(false);
+      setRows({});
+      refresh();
+      toast.success(t('po.received_ok'));
+    },
+    onError: (e) => toast.error(t(`errors.${e instanceof ApiRequestError ? e.code : 'E-SYS-001'}`)),
+  });
+
+  const setRow = (itemId: string, patch: Partial<ReceiptRow>) =>
+    setRows((prev) => ({
+      ...prev,
+      [itemId]: { batch: '', expiry: '', qty: '', ...prev[itemId], ...patch },
+    }));
+
+  const po = detailQuery.data;
+  return (
+    <Modal open onClose={onClose} title={t('po.detail_title')} className="max-w-3xl">
+      {!po ? (
+        <div className="flex justify-center py-8">
+          <Spinner />
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="numeric font-semibold text-slate-800">{po.po_number}</div>
+            <OrderStatusBadge status={po.status} />
+          </div>
+          <div className="text-sm text-slate-600">
+            {t('po.total')}:{' '}
+            <span className="numeric">
+              {po.total} {po.currency_code}
+            </span>
+          </div>
+
+          <table className="w-full text-start text-sm">
+            <thead>
+              <tr className="border-b border-border text-xs text-slate-500">
+                <th className="p-2 text-start">{t('po.qty_ordered')}</th>
+                <th className="p-2 text-start">{t('po.qty_received')}</th>
+                <th className="p-2 text-start">{t('po.unit_cost')}</th>
+                <th className="p-2 text-start">{t('po.line_total')}</th>
+                {receiving && <th className="p-2 text-start">{t('po.batch_number')}</th>}
+                {receiving && <th className="p-2 text-start">{t('po.expiry')}</th>}
+                {receiving && <th className="p-2 text-start">{t('po.qty_to_receive')}</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {(po.items ?? []).map((it) => (
+                <tr key={it.id} className="border-b border-border/60">
+                  <td className="numeric p-2">{it.qty_ordered}</td>
+                  <td className="numeric p-2">{it.qty_received}</td>
+                  <td className="numeric p-2">{it.unit_cost}</td>
+                  <td className="numeric p-2">{it.line_total}</td>
+                  {receiving && (
+                    <>
+                      <td className="p-2">
+                        <Input
+                          className="h-8 w-28"
+                          value={rows[it.id]?.batch ?? ''}
+                          onChange={(e) => setRow(it.id, { batch: e.target.value })}
+                        />
+                      </td>
+                      <td className="p-2">
+                        <Input
+                          type="date"
+                          className="h-8"
+                          value={rows[it.id]?.expiry ?? ''}
+                          onChange={(e) => setRow(it.id, { expiry: e.target.value })}
+                        />
+                      </td>
+                      <td className="p-2">
+                        <Input
+                          className="numeric h-8 w-20"
+                          value={rows[it.id]?.qty ?? ''}
+                          onChange={(e) => setRow(it.id, { qty: e.target.value })}
+                        />
+                      </td>
+                    </>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div className="flex flex-wrap justify-end gap-2">
+            {po.status === 'draft' && (
+              <Button size="sm" onClick={() => actionMut.mutate('submit')}>
+                {t('po.submit')}
+              </Button>
+            )}
+            {po.status === 'pending_approval' && (
+              <Button size="sm" onClick={() => actionMut.mutate('approve')}>
+                {t('po.approve')}
+              </Button>
+            )}
+            {['draft', 'pending_approval', 'approved'].includes(po.status) && (
+              <Button size="sm" variant="outline" onClick={() => actionMut.mutate('cancel')}>
+                {t('po.cancel_order')}
+              </Button>
+            )}
+            {['approved', 'partially_received'].includes(po.status) && !receiving && (
+              <Button size="sm" onClick={() => setReceiving(true)}>
+                {t('po.receive')}
+              </Button>
+            )}
+            {receiving && (
+              <Button size="sm" disabled={receiveMut.isPending} onClick={() => receiveMut.mutate()}>
+                {t('po.do_receive')}
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ================================ Suppliers (P2-M1) ================================
 
 interface SupplierForm {
   name: string;
@@ -65,7 +661,7 @@ function detailToForm(s: SupplierDetail): SupplierForm {
   };
 }
 
-export default function PurchasesPage() {
+function SuppliersTab() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [activeOnly, setActiveOnly] = useState(false);
@@ -129,29 +725,27 @@ export default function PurchasesPage() {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold text-slate-900">{t('purchases.title')}</h1>
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            className="max-w-xs"
+            placeholder={t('purchases.search')}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={activeOnly}
+              onChange={(e) => setActiveOnly(e.target.checked)}
+            />
+            {t('purchases.active_only')}
+          </label>
+        </div>
         <Button onClick={() => setShowForm((v) => !v)}>
           {showForm ? t('purchases.cancel') : t('purchases.add')}
         </Button>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <Input
-          className="max-w-xs"
-          placeholder={t('purchases.search')}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <label className="flex items-center gap-2 text-sm text-slate-600">
-          <input
-            type="checkbox"
-            checked={activeOnly}
-            onChange={(e) => setActiveOnly(e.target.checked)}
-          />
-          {t('purchases.active_only')}
-        </label>
       </div>
 
       {showForm && (

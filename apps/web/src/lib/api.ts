@@ -659,3 +659,86 @@ export function updatePurchaseSupplier(id: string, values: Record<string, unknow
     body: JSON.stringify(values),
   });
 }
+
+// ---- Purchasing: purchase orders (P2-M2) ----
+
+export interface PurchaseItem {
+  id: string;
+  medication_id: string;
+  packaging_id: string;
+  qty_ordered: string;
+  qty_received: string;
+  unit_cost: string;
+  line_total: string;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  branch_id: string;
+  supplier_id: string;
+  po_number: string;
+  status: string;
+  order_date: string;
+  expected_date: string | null;
+  currency_code: string;
+  subtotal: string;
+  tax_amount: string;
+  total: string;
+  notes: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string;
+  items?: PurchaseItem[];
+}
+
+export interface NewPurchaseLine {
+  medication_id: string;
+  packaging_id: string;
+  qty_ordered: string;
+  unit_cost: string;
+}
+
+export interface NewReceiptLine {
+  purchase_item_id: string;
+  batch_number: string;
+  expiry_date: string;
+  quantity: string;
+}
+
+export function listPurchaseOrders(
+  opts: { branch_id?: string; status?: string; supplier_id?: string } = {},
+) {
+  const params = new URLSearchParams({ limit: '100' });
+  if (opts.branch_id) params.set('branch_id', opts.branch_id);
+  if (opts.status) params.set('status', opts.status);
+  if (opts.supplier_id) params.set('supplier_id', opts.supplier_id);
+  return apiFetch<PurchaseOrder[]>(`/api/v1/purchases/orders?${params.toString()}`);
+}
+
+export function getPurchaseOrder(id: string) {
+  return apiFetch<PurchaseOrder>(`/api/v1/purchases/orders/${id}`);
+}
+
+export function createPurchaseOrder(input: {
+  branch_id: string;
+  supplier_id: string;
+  expected_date?: string | null;
+  notes?: string | null;
+  lines: NewPurchaseLine[];
+}) {
+  return apiFetch<PurchaseOrder>('/api/v1/purchases/orders', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function purchaseOrderAction(id: string, action: 'submit' | 'approve' | 'cancel') {
+  return apiFetch<PurchaseOrder>(`/api/v1/purchases/orders/${id}/${action}`, { method: 'POST' });
+}
+
+export function receivePurchaseOrder(id: string, receipts: NewReceiptLine[]) {
+  return apiFetch<PurchaseOrder>(`/api/v1/purchases/orders/${id}/receive`, {
+    method: 'POST',
+    body: JSON.stringify({ receipts }),
+  });
+}
