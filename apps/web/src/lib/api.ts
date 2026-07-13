@@ -686,8 +686,13 @@ export interface CashSessionInfo {
 export interface CashSessionSummary {
   cash_count: number;
   cash_total: string;
+  cash_refund_count: number;
+  cash_refunded: string;
   card_count: number;
   card_total: string;
+  card_refund_count: number;
+  card_refunded: string;
+  store_credit_refunded: string;
   tendered_total: string;
   change_total: string;
   expected_cash: string;
@@ -716,6 +721,11 @@ export interface DayZReport {
   card_outside_sessions: { count: number; total: string };
   invoice_count: number;
   total_sales: string;
+  refunds_cash: { count: number; total: string };
+  refunds_card: { count: number; total: string };
+  refunds_store_credit: { count: number; total: string };
+  total_refunds: string;
+  net_total_sales: string;
 }
 
 export function openCashSession(branchId: string, openingFloat: string) {

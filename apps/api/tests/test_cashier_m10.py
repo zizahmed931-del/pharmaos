@@ -1,7 +1,12 @@
 """Cash sessions (P1-M10): open/close lifecycle with the audit trail
 (cash_session.opened/closed/discrepancy), sale linkage + tendered/change
 persistence, drawer math (expected = float + cash totals), the day Z-report
-buckets, and the HTTP layer with the cashier permission tiers."""
+buckets, and the HTTP layer with the cashier permission tiers.
+
+P2-M7 reconciliation: expected_cash/cash_total/card_total are sourced from the
+payments ledger (net of refunds) — a cash/card refund issued mid-shift must be
+reflected in the SAME session's drawer math and survive into close_session's
+frozen discrepancy, while a store_credit refund must touch neither."""
 
 import datetime as dt
 import uuid
@@ -15,6 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pharmaos_api.errors import ApiError
 from pharmaos_api.models import (
     Branch,
+    Invoice,
+    InvoiceItem,
     Medication,
     MedicationBarcode,
     MedicationBatch,
@@ -22,7 +29,7 @@ from pharmaos_api.models import (
     Role,
     User,
 )
-from pharmaos_api.services import cashier_service, sales_service
+from pharmaos_api.services import cashier_service, return_service, sales_service
 from pharmaos_api.services.sales_service import SaleLine
 
 
@@ -92,6 +99,16 @@ async def _audit_count(db_session: AsyncSession, action: str, entity_id: uuid.UU
             )
         ).scalar_one()
     )
+
+
+async def _first_item(db_session: AsyncSession, invoice: Invoice) -> InvoiceItem:
+    item = (
+        (await db_session.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)))
+        .scalars()
+        .first()
+    )
+    assert item is not None
+    return item
 
 
 # ------------------------------ lifecycle ------------------------------
@@ -291,6 +308,191 @@ async def test_day_report_buckets(db_session: AsyncSession, actor: User, branch:
     assert report["cash_outside_sessions"] == {"count": 1, "total": "30.00"}
     assert report["invoice_count"] == 3
     assert report["total_sales"] == "120.00"
+    sessions = report["sessions"]
+    assert isinstance(sessions, list) and len(sessions) == 1
+    assert sessions[0]["id"] == str(cash_session.id)
+
+
+# ------------------------------ P2-M7 payments reconciliation ------------------------------
+
+
+async def test_cash_refund_reduces_expected_cash(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("50.00")
+    )
+    barcode = await _make_med(db_session, branch.id)
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(3), barcode=barcode)],  # 90.00 cash
+        cashier=actor,
+        tendered=Decimal("100.00"),
+    )
+    before = await cashier_service.session_summary(db_session, cash_session)
+    assert before["cash_total"] == "90.00" and before["expected_cash"] == "140.00"
+
+    # Return 1 of the 3 strips (30.00) for a cash refund — mid-shift.
+    item = await _first_item(db_session, invoice)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+        refund_method="cash",
+    )
+
+    after = await cashier_service.session_summary(db_session, cash_session)
+    assert after["cash_total"] == "60.00"  # 90 sold - 30 refunded (net, from payments)
+    assert after["cash_refund_count"] == 1 and after["cash_refunded"] == "30.00"
+    assert after["cash_count"] == 1  # still one SALE payment; the refund is tracked separately
+    assert after["expected_cash"] == "110.00"  # 50 float + 60 net cash
+    # tendered/change stay invoice-sourced and unaffected by the refund.
+    assert after["tendered_total"] == "100.00" and after["change_total"] == "10.00"
+
+
+async def test_card_refund_reduces_card_total_only(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal(0)
+    )
+    barcode = await _make_med(db_session, branch.id)
+    card_invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],  # 60.00 card
+        cashier=actor,
+        payment_method="card",
+    )
+    await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],  # 30.00 cash
+        cashier=actor,
+    )
+
+    item = await _first_item(db_session, card_invoice)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=card_invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+        refund_method="card",
+    )
+
+    summary = await cashier_service.session_summary(db_session, cash_session)
+    assert summary["card_total"] == "30.00"  # 60 - 30 refunded
+    assert summary["card_refund_count"] == 1 and summary["card_refunded"] == "30.00"
+    # The cash side (and expected_cash) is untouched by a CARD refund.
+    assert summary["cash_total"] == "30.00" and summary["expected_cash"] == "30.00"
+    assert summary["cash_refund_count"] == 0
+
+
+async def test_store_credit_refund_does_not_touch_cash_or_card(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal(0)
+    )
+    barcode = await _make_med(db_session, branch.id)
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],  # 60.00 cash
+        cashier=actor,
+    )
+    item = await _first_item(db_session, invoice)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+        refund_method="store_credit",
+    )
+
+    summary = await cashier_service.session_summary(db_session, cash_session)
+    assert summary["cash_total"] == "60.00" and summary["expected_cash"] == "60.00"
+    assert summary["cash_refund_count"] == 0 and summary["card_refund_count"] == 0
+    assert summary["store_credit_refunded"] == "30.00"
+
+
+async def test_close_session_discrepancy_reflects_mid_shift_refund(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """Full reconciliation: a cash refund issued BEFORE close must already be
+    netted into expected_cash — closing with the exact post-refund drawer count
+    balances (discrepancy 0), proving close_session picks up the corrected
+    number rather than the pre-refund total."""
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("50.00")
+    )
+    barcode = await _make_med(db_session, branch.id)
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(3), barcode=barcode)],  # 90.00 cash
+        cashier=actor,
+        tendered=Decimal("100.00"),
+    )
+    item = await _first_item(db_session, invoice)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+        refund_method="cash",
+    )
+    # Drawer truth: 50 float + 90 sold - 30 refunded = 110, physically counted.
+    closed = await cashier_service.close_session(
+        db_session, actor=actor, cash_session=cash_session, counted_cash=Decimal("110.00")
+    )
+    assert closed.expected_cash == Decimal("110.00")
+    assert closed.discrepancy == Decimal("0.00")
+    assert await _audit_count(db_session, "cash_session.discrepancy", closed.id) == 0
+
+    metadata_row = (
+        await db_session.execute(
+            text(
+                "SELECT metadata FROM audit_logs WHERE action = 'cash_session.closed' "
+                "AND entity_id = :e"
+            ).bindparams(e=closed.id)
+        )
+    ).scalar_one()
+    assert metadata_row["expected_cash"] == "110.00"
+
+
+async def test_day_report_refunds_and_net_total(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    bid = branch.id
+    barcode = await _make_med(db_session, bid)
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=bid, opening_float=Decimal(0)
+    )
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=bid,
+        lines=[SaleLine(quantity=Decimal(3), barcode=barcode)],  # 90.00 cash
+        cashier=actor,
+    )
+    item = await _first_item(db_session, invoice)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+        refund_method="cash",
+    )
+
+    report = await cashier_service.day_report(db_session, branch_id=bid, day=dt.date.today())
+    # total_sales stays GROSS (unchanged pre-existing meaning) — 90.00.
+    assert report["total_sales"] == "90.00"
+    assert report["refunds_cash"] == {"count": 1, "total": "30.00"}
+    assert report["refunds_card"] == {"count": 0, "total": "0.00"}
+    assert report["total_refunds"] == "30.00"
+    assert report["net_total_sales"] == "60.00"
     sessions = report["sessions"]
     assert isinstance(sessions, list) and len(sessions) == 1
     assert sessions[0]["id"] == str(cash_session.id)

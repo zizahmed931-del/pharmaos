@@ -160,6 +160,32 @@ export default function CashierPage() {
                 <Stat label={t('cashier.change_total')} value={summary.change_total} />
                 <Stat label={t('cashier.expected')} value={summary.expected_cash} highlight />
               </div>
+              {/* Refunds this shift (P2-M7) — hidden when there are none, so a
+                  shift with no returns looks exactly as it did before. */}
+              {(summary.cash_refund_count > 0 ||
+                summary.card_refund_count > 0 ||
+                Number(summary.store_credit_refunded) > 0) && (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  {summary.cash_refund_count > 0 && (
+                    <Stat
+                      label={t('cashier.cash_refunded')}
+                      value={`${summary.cash_refunded} (${summary.cash_refund_count})`}
+                    />
+                  )}
+                  {summary.card_refund_count > 0 && (
+                    <Stat
+                      label={t('cashier.card_refunded')}
+                      value={`${summary.card_refunded} (${summary.card_refund_count})`}
+                    />
+                  )}
+                  {Number(summary.store_credit_refunded) > 0 && (
+                    <Stat
+                      label={t('cashier.store_credit_refunded')}
+                      value={summary.store_credit_refunded}
+                    />
+                  )}
+                </div>
+              )}
               {canClose && (
                 <div className="flex justify-end">
                   <Button variant="danger" onClick={() => setCloseTarget({ session, summary })}>
@@ -209,7 +235,8 @@ export default function CashierPage() {
             ) : (
               <div className="space-y-5">
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                  <Stat label={t('cashier.total_sales')} value={z.total_sales} highlight />
+                  <Stat label={t('cashier.total_sales')} value={z.total_sales} />
+                  <Stat label={t('cashier.net_sales')} value={z.net_total_sales} highlight />
                   <Stat label={t('cashier.invoices')} value={String(z.invoice_count)} />
                   <Stat
                     label={`${t('cashier.cash_sales')} — ${t('cashier.in_session')}`}
@@ -227,6 +254,9 @@ export default function CashierPage() {
                     label={`${t('cashier.card_sales')} — ${t('cashier.outside')}`}
                     value={z.card_outside_sessions.total}
                   />
+                  {Number(z.total_refunds) > 0 && (
+                    <Stat label={t('cashier.total_refunds')} value={z.total_refunds} />
+                  )}
                 </div>
 
                 <h3 className="text-xs font-bold text-slate-500">{t('cashier.sessions_table')}</h3>

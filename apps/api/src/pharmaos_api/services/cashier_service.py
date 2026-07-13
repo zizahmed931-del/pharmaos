@@ -3,10 +3,17 @@
 Rules:
 - ONE open session per cashier per branch (service check + partial unique
   index backstop for races — same pattern as invoice numbering).
-- Drawer math: expected_cash = opening_float + Σ(total of CASH invoices linked
-  to the session). Tendered/change cancel out (tendered in, change back out —
-  the drawer nets +total), so they are recorded on invoices for the customer
-  math but do not enter the expected-cash formula.
+- Drawer math (P2-M7 update): expected_cash = opening_float + Σ(payments.amount
+  WHERE method='cash' AND cash_session_id=session). payments is the SIGNED
+  money ledger (+amount for a sale receipt, -amount for a refund — see
+  payment_service/return_service), so this single sum is NET of any cash
+  refunds issued during the session — a return's cash outflow reduces the
+  drawer exactly like a sale's cash inflow increases it. Sale/refund payment
+  rows are distinguished by their FK (invoice_id vs return_id), not by the
+  sign of amount, so a future zero-amount sale is still counted correctly.
+  Tendered/change cancel out (tendered in, change back out — a cash sale nets
+  +total), so they stay invoice-sourced (customer receipt math) and do NOT
+  enter the expected-cash formula.
 - Close FREEZES expected/counted/discrepancy on the row — a shift's Z numbers
   never drift when later data changes. cash_session.closed is audited in the
   SAME transaction; a nonzero discrepancy is additionally recorded via
@@ -104,27 +111,50 @@ async def open_session(
 
 
 async def session_summary(session: AsyncSession, cash_session: CashSession) -> dict[str, str | int]:
-    """Live drawer summary for one session (completed invoices only)."""
-    rows = (await session.execute(text("""
-                SELECT payment_method, COUNT(*) AS n, COALESCE(SUM(total), 0) AS amount,
-                       COALESCE(SUM(tendered_amount), 0) AS tendered,
-                       COALESCE(SUM(change_amount), 0) AS change
+    """Live drawer summary for one session.
+
+    cash_total/card_total are NET money movement for the session — sourced from
+    the payments ledger (P2-M7), so a cash refund issued mid-shift correctly
+    reduces expected_cash instead of being invisible to the drawer math (the
+    pre-P2-M7 invoice-only sum ignored refunds entirely). tendered/change stay
+    invoice-sourced (customer receipt math only).
+    """
+    pay_rows = (await session.execute(text("""
+                SELECT method, COALESCE(SUM(amount), 0) AS net,
+                       COUNT(*) FILTER (WHERE invoice_id IS NOT NULL) AS sale_n,
+                       COUNT(*) FILTER (WHERE return_id IS NOT NULL) AS refund_n,
+                       COALESCE(-SUM(amount) FILTER (WHERE return_id IS NOT NULL), 0) AS refunded
+                FROM payments
+                WHERE cash_session_id = :s AND NOT is_deleted
+                GROUP BY method
+                """).bindparams(s=cash_session.id))).all()
+    pay = {r[0]: r for r in pay_rows}
+    cash_pay = pay.get("cash")
+    card_pay = pay.get("card")
+    credit_pay = pay.get("store_credit")
+
+    cash_total = Decimal(cash_pay[1]) if cash_pay else _ZERO
+    expected = _q2(cash_session.opening_float + cash_total)
+
+    tc_row = (await session.execute(text("""
+                SELECT COALESCE(SUM(tendered_amount), 0), COALESCE(SUM(change_amount), 0)
                 FROM invoices
                 WHERE cash_session_id = :s AND NOT is_deleted AND status = 'completed'
-                GROUP BY payment_method
-                """).bindparams(s=cash_session.id))).all()
-    stats = {r[0]: r for r in rows}
-    cash = stats.get("cash")
-    card = stats.get("card")
-    cash_total = Decimal(cash[2]) if cash else _ZERO
-    expected = _q2(cash_session.opening_float + cash_total)
+                  AND payment_method = 'cash'
+                """).bindparams(s=cash_session.id))).one()
+
     return {
-        "cash_count": int(cash[1]) if cash else 0,
+        "cash_count": int(cash_pay[2]) if cash_pay else 0,
         "cash_total": str(_q2(cash_total)),
-        "card_count": int(card[1]) if card else 0,
-        "card_total": str(_q2(Decimal(card[2]))) if card else str(_ZERO),
-        "tendered_total": str(_q2(Decimal(cash[3]))) if cash else str(_ZERO),
-        "change_total": str(_q2(Decimal(cash[4]))) if cash else str(_ZERO),
+        "cash_refund_count": int(cash_pay[3]) if cash_pay else 0,
+        "cash_refunded": str(_q2(Decimal(cash_pay[4]))) if cash_pay else str(_ZERO),
+        "card_count": int(card_pay[2]) if card_pay else 0,
+        "card_total": str(_q2(Decimal(card_pay[1]))) if card_pay else str(_ZERO),
+        "card_refund_count": int(card_pay[3]) if card_pay else 0,
+        "card_refunded": str(_q2(Decimal(card_pay[4]))) if card_pay else str(_ZERO),
+        "store_credit_refunded": str(_q2(Decimal(credit_pay[4]))) if credit_pay else str(_ZERO),
+        "tendered_total": str(_q2(Decimal(tc_row[0]))),
+        "change_total": str(_q2(Decimal(tc_row[1]))),
         "expected_cash": str(expected),
     }
 
@@ -243,9 +273,14 @@ async def list_sessions(
 async def day_report(
     session: AsyncSession, *, branch_id: uuid.UUID, day: dt.date
 ) -> dict[str, object]:
-    """End-of-day Z-report: the branch's local-day totals by payment method,
-    split between in-session sales and sales made outside any drawer session
-    (e.g. a pharmacist selling without cashier.open_session)."""
+    """End-of-day Z-report: the branch's local-day GROSS sales by payment
+    method, split between in-session sales and sales made outside any drawer
+    session (e.g. a pharmacist selling without cashier.open_session) — this
+    part is unchanged (still invoice-sourced; existing fields keep their exact
+    meaning). P2-M7 adds a refunds breakdown (from the returns ledger, by
+    refund_method) and net_total_sales = total_sales - total_refunds, so the
+    day view stays consistent with the now refund-aware per-session math
+    without changing what the pre-existing fields mean."""
     rows = (await session.execute(text("""
                 SELECT payment_method,
                        (cash_session_id IS NOT NULL) AS in_session,
@@ -268,9 +303,32 @@ async def day_report(
     card_out_n, card_out = _bucket("card", False)
     total_sales = _q2(cash_in + card_in + cash_out + card_out)
 
+    refund_rows = (await session.execute(text("""
+                SELECT refund_method, COUNT(*) AS n, COALESCE(SUM(total), 0) AS amount
+                FROM returns
+                WHERE branch_id = :b AND NOT is_deleted AND CAST(created_at AS date) = :d
+                GROUP BY refund_method
+                """).bindparams(b=branch_id, d=day))).all()
+
+    def _refund_bucket(method: str) -> tuple[int, Decimal]:
+        for r in refund_rows:
+            if r[0] == method:
+                return int(r[1]), _q2(Decimal(r[2]))
+        return 0, _ZERO
+
+    cash_refund_n, cash_refund = _refund_bucket("cash")
+    card_refund_n, card_refund = _refund_bucket("card")
+    credit_refund_n, credit_refund = _refund_bucket("store_credit")
+    total_refunds = _q2(cash_refund + card_refund + credit_refund)
+
     return {
         "date": day.isoformat(),
         "sessions": await list_sessions(session, branch_id=branch_id, day=day),
+        "refunds_cash": {"count": cash_refund_n, "total": str(cash_refund)},
+        "refunds_card": {"count": card_refund_n, "total": str(card_refund)},
+        "refunds_store_credit": {"count": credit_refund_n, "total": str(credit_refund)},
+        "total_refunds": str(total_refunds),
+        "net_total_sales": str(_q2(total_sales - total_refunds)),
         "cash_in_session": {"count": cash_in_n, "total": str(cash_in)},
         "card_in_session": {"count": card_in_n, "total": str(card_in)},
         "cash_outside_sessions": {"count": cash_out_n, "total": str(cash_out)},
