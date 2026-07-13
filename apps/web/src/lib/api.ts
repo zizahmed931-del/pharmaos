@@ -1145,3 +1145,100 @@ export function listControlledSubstanceLog(branchId: string, opts: { medicationI
   if (opts.medicationId) params.set('medication_id', opts.medicationId);
   return apiFetch<ControlledLogRow[]>(`/api/v1/controlled-substances/log?${params.toString()}`);
 }
+
+// ---- Expenses + categories (P2-M9) ----
+
+export type ExpensePaymentMethod = 'cash' | 'card' | 'bank_transfer';
+
+export interface ExpenseCategory {
+  id: string;
+  name_ar: string;
+  name_en: string | null;
+  is_active: boolean;
+}
+
+export interface ExpenseRow {
+  id: string;
+  branch_id: string;
+  expense_category_id: string;
+  category_name_ar: string;
+  category_name_en: string | null;
+  amount: string;
+  currency_code: string;
+  expense_date: string;
+  description: string | null;
+  payment_method: ExpensePaymentMethod;
+  created_at: string;
+}
+
+export function listExpenseCategories(opts: { activeOnly?: boolean } = {}) {
+  const params = new URLSearchParams();
+  if (opts.activeOnly) params.set('active_only', 'true');
+  return apiFetch<ExpenseCategory[]>(`/api/v1/finance/expense-categories?${params.toString()}`);
+}
+
+export function createExpenseCategory(input: { name_ar: string; name_en?: string | null }) {
+  return apiFetch<ExpenseCategory>('/api/v1/finance/expense-categories', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateExpenseCategory(
+  id: string,
+  patch: { name_ar?: string; name_en?: string | null; is_active?: boolean },
+) {
+  return apiFetch<ExpenseCategory>(`/api/v1/finance/expense-categories/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function listExpenses(
+  branchId: string,
+  opts: { categoryId?: string; dateFrom?: string; dateTo?: string } = {},
+) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '200' });
+  if (opts.categoryId) params.set('category_id', opts.categoryId);
+  if (opts.dateFrom) params.set('date_from', opts.dateFrom);
+  if (opts.dateTo) params.set('date_to', opts.dateTo);
+  return apiFetch<ExpenseRow[]>(`/api/v1/finance/expenses?${params.toString()}`);
+}
+
+export function getExpense(id: string) {
+  return apiFetch<ExpenseRow>(`/api/v1/finance/expenses/${id}`);
+}
+
+export function createExpense(input: {
+  branch_id: string;
+  expense_category_id: string;
+  amount: string;
+  expense_date: string;
+  description?: string | null;
+  payment_method: ExpensePaymentMethod;
+}) {
+  return apiFetch<ExpenseRow>('/api/v1/finance/expenses', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateExpense(
+  id: string,
+  patch: {
+    expense_category_id?: string;
+    amount?: string;
+    expense_date?: string;
+    description?: string | null;
+    payment_method?: ExpensePaymentMethod;
+  },
+) {
+  return apiFetch<ExpenseRow>(`/api/v1/finance/expenses/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deleteExpense(id: string) {
+  return apiFetch<{ deleted: boolean }>(`/api/v1/finance/expenses/${id}`, { method: 'DELETE' });
+}
