@@ -42,6 +42,7 @@ from pharmaos_api.services import (
     catalog_service,
     customer_service,
     pack_serial_service,
+    payment_service,
     tax_service,
 )
 
@@ -465,6 +466,17 @@ async def create_sale(
             total=total,
         )
         invoice.customer_id = customer_id
+
+    # P2-M7: record the receipt in the money ledger (+total), atomic with the sale.
+    await payment_service.record(
+        session,
+        actor=cashier,
+        branch_id=branch_id,
+        amount=total,
+        method=payment_method,
+        invoice_id=invoice.id,
+        cash_session_id=invoice.cash_session_id,
+    )
 
     # Audit the sale IN THE SAME transaction (CLAUDE.md: audit from the first
     # write). If the commit fails, the audit entry rolls back with the sale.

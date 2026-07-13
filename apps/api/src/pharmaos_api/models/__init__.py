@@ -16,6 +16,9 @@ from pharmaos_api.models.operations import (
     InvoiceItem,
     MedicationBatch,
     PackSerial,
+    Payment,
+    Return,
+    ReturnItem,
     StockMovement,
 )
 from pharmaos_api.models.purchasing import PurchaseItem, PurchaseOrder, Supplier
@@ -42,9 +45,12 @@ __all__ = [
     "MedicationPackaging",
     "MedicationPriceHistory",
     "PackSerial",
+    "Payment",
     "Permission",
     "PurchaseItem",
     "PurchaseOrder",
+    "Return",
+    "ReturnItem",
     "Role",
     "RolePermission",
     "Settings",

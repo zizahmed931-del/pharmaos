@@ -170,3 +170,90 @@ class PackSerial(MandatoryColumnsMixin, Base):
     tt_report_status: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'pending'")
     )
+
+
+class Return(MandatoryColumnsMixin, Base):
+    """Credit note (P2-M7) — references the original invoice; the invoice itself
+    is never modified (CLAUDE.md rule 14). Amounts are magnitudes (the credit)."""
+
+    __tablename__ = "returns"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=False
+    )
+    original_invoice_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=False
+    )
+    return_number: Mapped[str] = mapped_column(String(30), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    currency_code: Mapped[str] = mapped_column(String(3), nullable=False)
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default=text("0")
+    )
+    total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    refund_method: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'cash'")
+    )
+    customer_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customers.id"), nullable=True
+    )
+    cash_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cash_sessions.id"), nullable=True
+    )
+
+
+class ReturnItem(MandatoryColumnsMixin, Base):
+    __tablename__ = "return_items"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=False
+    )
+    return_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("returns.id"), nullable=False
+    )
+    invoice_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoice_items.id"), nullable=True
+    )
+    medication_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("medications.id"), nullable=False
+    )
+    packaging_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("medication_packaging.id"), nullable=False
+    )
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("medication_batches.id"), nullable=False
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(10, 3), nullable=False)
+    qty_smallest: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False)
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    tax_rate: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, server_default=text("0")
+    )
+    tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, server_default=text("0")
+    )
+
+
+class Payment(MandatoryColumnsMixin, Base):
+    """Signed money ledger (P2-M7): +amount for a sale receipt, -amount for a
+    refund. Belongs to EITHER an invoice or a return."""
+
+    __tablename__ = "payments"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=False
+    )
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+    )
+    return_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("returns.id"), nullable=True
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    method: Mapped[str] = mapped_column(String(20), nullable=False)
+    cash_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cash_sessions.id"), nullable=True
+    )
+    reference: Mapped[str | None] = mapped_column(String(64), nullable=True)

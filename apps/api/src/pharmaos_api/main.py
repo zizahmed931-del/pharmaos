@@ -24,6 +24,7 @@ from pharmaos_api.routers import (
     inventory,
     pos,
     purchases,
+    returns,
     users,
 )
 
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(cashier.router)
     app.include_router(purchases.router)
     app.include_router(customers.router)
+    app.include_router(returns.router)
 
     @app.exception_handler(ApiError)
     async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
