@@ -38,6 +38,22 @@ class ReturnIn(BaseModel):
     refund_method: str = Field(default="cash", pattern="^(cash|card|store_credit)$")
 
 
+@router.get("/invoices/lookup")
+async def lookup_invoice(
+    branch_id: uuid.UUID = Query(),
+    invoice_number: str = Query(min_length=1, max_length=30),
+    session: AsyncSession = Depends(get_session),
+    _: None = _view,
+) -> dict[str, object]:
+    """Resolve a human-facing invoice number (as printed on the receipt) and
+    return its returnable lines — the entry point for the returns UI."""
+    return success_envelope(
+        await svc.get_returnable_by_number(
+            session, branch_id=branch_id, invoice_number=invoice_number
+        )
+    )
+
+
 @router.get("/invoices/{invoice_id}/returnable")
 async def returnable(
     invoice_id: uuid.UUID,

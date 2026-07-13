@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from pharmaos_api.errors import ApiError, ErrorCode
 from pharmaos_api.models import (
     Branch,
     InvoiceItem,
@@ -191,14 +192,14 @@ async def test_over_return_rejected(db_session: AsyncSession, actor: User, branc
         lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(2))],
     )
     # Only 1 remains returnable; asking for 2 more is refused.
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(ApiError) as exc:
         await return_service.create_return(
             db_session,
             actor=actor,
             original_invoice_id=invoice.id,
             lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(2))],
         )
-    assert "E-VAL-001" in str(getattr(exc.value, "code", ""))
+    assert exc.value.code == ErrorCode.VALIDATION_FAILED
 
 
 async def test_partial_return_and_returnable_view(
@@ -220,6 +221,63 @@ async def test_partial_return_and_returnable_view(
     assert line["sold_qty"] == "3.000"
     assert line["returned_qty"] == "1.000"
     assert line["returnable_qty"] == "2.000"
+
+
+async def test_lookup_by_invoice_number(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """The returns UI resolves a human-facing invoice number — never a UUID."""
+    med_id, bc = await _make_med(db_session, is_medicine=True, price="40.00")
+    await _receive(db_session, actor, branch, med_id, qty="10")
+    invoice = await _sell(db_session, actor, branch, bc, "1")
+
+    view = await return_service.get_returnable_by_number(
+        db_session, branch_id=branch.id, invoice_number=invoice.invoice_number
+    )
+    assert view["invoice_id"] == str(invoice.id)
+    assert view["lines"][0]["returnable_qty"] == "1.000"  # type: ignore[index]
+
+    with pytest.raises(ApiError) as exc:
+        await return_service.get_returnable_by_number(
+            db_session, branch_id=branch.id, invoice_number="INV-NOPE-0000"
+        )
+    assert exc.value.code == ErrorCode.VALIDATION_FAILED
+
+    # A number that exists but in a DIFFERENT branch must not resolve either.
+    other_branch = Branch(
+        name=f"فرع {uuid.uuid4().hex[:6]}", country_code="EG", currency_code="EGP"
+    )
+    db_session.add(other_branch)
+    await db_session.commit()
+    with pytest.raises(ApiError):
+        await return_service.get_returnable_by_number(
+            db_session, branch_id=other_branch.id, invoice_number=invoice.invoice_number
+        )
+
+
+async def test_return_summary_carries_original_invoice_number(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    med_id, bc = await _make_med(db_session, is_medicine=True, price="50.00")
+    await _receive(db_session, actor, branch, med_id, qty="100")
+    invoice = await _sell(db_session, actor, branch, bc, "2")
+    item = await _first_item(db_session, invoice.id)
+    credit = await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+    )
+
+    detail = await return_service.get_return(db_session, credit.id)
+    assert detail["original_invoice_number"] == invoice.invoice_number
+
+    rows, total = await return_service.list_returns(db_session, branch_id=branch.id)
+    assert total >= 1
+    assert any(
+        r["id"] == str(credit.id) and r["original_invoice_number"] == invoice.invoice_number
+        for r in rows
+    )
 
 
 async def test_taxable_return_credits_vat(
@@ -319,3 +377,25 @@ async def test_return_api_permissions_and_csrf(
     assert ok.status_code == 200, ok.text
     data = ok.json()["data"]
     assert data["total"] == "50.00" and len(data["items"]) == 1
+
+
+async def test_invoice_lookup_endpoint(
+    client: httpx.AsyncClient, db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    med_id, bc = await _make_med(db_session, is_medicine=True, price="20.00")
+    await _receive(db_session, actor, branch, med_id, qty="10")
+    invoice = await _sell(db_session, actor, branch, bc, "1")
+
+    await _login(client, await _seed(db_session, "cashier"))
+    found = await client.get(
+        "/api/v1/invoices/lookup",
+        params={"branch_id": str(branch.id), "invoice_number": invoice.invoice_number},
+    )
+    assert found.status_code == 200, found.text
+    assert found.json()["data"]["invoice_id"] == str(invoice.id)
+
+    missing = await client.get(
+        "/api/v1/invoices/lookup",
+        params={"branch_id": str(branch.id), "invoice_number": "INV-NOPE-9999"},
+    )
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "E-VAL-001"

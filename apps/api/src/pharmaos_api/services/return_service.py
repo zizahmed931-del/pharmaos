@@ -85,6 +85,26 @@ async def _returned_qty(session: AsyncSession, invoice_item_id: uuid.UUID) -> De
     return Decimal(total)
 
 
+async def get_returnable_by_number(
+    session: AsyncSession, *, branch_id: uuid.UUID, invoice_number: str
+) -> dict[str, object]:
+    """Resolve a human-facing invoice number (as printed on the receipt) within a
+    branch, then return the same shape as get_returnable — the entry point for
+    the returns UI, which never sees invoice UUIDs."""
+    invoice = (
+        await session.execute(
+            select(Invoice).where(
+                Invoice.branch_id == branch_id,
+                Invoice.invoice_number == invoice_number.strip(),
+                Invoice.is_deleted.is_(False),
+            )
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Invoice not found.")
+    return await get_returnable(session, invoice.id)
+
+
 async def get_returnable(session: AsyncSession, invoice_id: uuid.UUID) -> dict[str, object]:
     """Per original line: sold / already-returned / still-returnable quantities.
     Drives the return UI. Lines are aggregated by invoice_item (a FEFO-sliced sale
@@ -307,13 +327,16 @@ async def create_return(
 
 
 async def get_return(session: AsyncSession, return_id: uuid.UUID) -> dict[str, object]:
-    credit_note = (
+    row = (
         await session.execute(
-            select(Return).where(Return.id == return_id, Return.is_deleted.is_(False))
+            select(Return, Invoice.invoice_number)
+            .join(Invoice, Invoice.id == Return.original_invoice_id)
+            .where(Return.id == return_id, Return.is_deleted.is_(False))
         )
-    ).scalar_one_or_none()
-    if credit_note is None:
+    ).first()
+    if row is None:
         raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Return not found.")
+    credit_note, invoice_number = row
     rows = (
         await session.execute(
             select(ReturnItem, Medication, MedicationPackaging)
@@ -323,7 +346,10 @@ async def get_return(session: AsyncSession, return_id: uuid.UUID) -> dict[str, o
             .order_by(ReturnItem.created_at)
         )
     ).all()
-    return {**_summary(credit_note), "items": [_item(i, m, p) for i, m, p in rows]}
+    return {
+        **_summary(credit_note, invoice_number),
+        "items": [_item(i, m, p) for i, m, p in rows],
+    }
 
 
 async def list_returns(
@@ -333,26 +359,24 @@ async def list_returns(
     conditions = [Return.branch_id == branch_id, Return.is_deleted.is_(False)]
     total = (await session.execute(select(func.count(Return.id)).where(*conditions))).scalar_one()
     rows = (
-        (
-            await session.execute(
-                select(Return)
-                .where(*conditions)
-                .order_by(Return.created_at.desc())
-                .offset(max(skip, 0))
-                .limit(capped)
-            )
+        await session.execute(
+            select(Return, Invoice.invoice_number)
+            .join(Invoice, Invoice.id == Return.original_invoice_id)
+            .where(*conditions)
+            .order_by(Return.created_at.desc())
+            .offset(max(skip, 0))
+            .limit(capped)
         )
-        .scalars()
-        .all()
-    )
-    return [_summary(r) for r in rows], int(total)
+    ).all()
+    return [_summary(r, invoice_number) for r, invoice_number in rows], int(total)
 
 
-def _summary(r: Return) -> dict[str, object]:
+def _summary(r: Return, invoice_number: str) -> dict[str, object]:
     return {
         "id": str(r.id),
         "return_number": r.return_number,
         "original_invoice_id": str(r.original_invoice_id),
+        "original_invoice_number": invoice_number,
         "currency_code": r.currency_code,
         "subtotal": str(r.subtotal),
         "tax_amount": str(r.tax_amount),

@@ -929,3 +929,91 @@ export function receivePurchaseOrder(id: string, receipts: NewReceiptLine[]) {
     body: JSON.stringify({ receipts }),
   });
 }
+
+// ---- Returns / credit notes (P2-M7) ----
+
+export type RefundMethod = 'cash' | 'card' | 'store_credit';
+
+export interface ReturnableLine {
+  invoice_item_id: string;
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  packaging_name_ar: string;
+  unit_price: string;
+  tax_rate: string;
+  sold_qty: string;
+  returned_qty: string;
+  returnable_qty: string;
+}
+
+export interface ReturnableInvoice {
+  invoice_id: string;
+  invoice_number: string;
+  invoice_type: string;
+  status: string;
+  currency_code: string;
+  lines: ReturnableLine[];
+}
+
+export function lookupInvoiceForReturn(branchId: string, invoiceNumber: string) {
+  const params = new URLSearchParams({ branch_id: branchId, invoice_number: invoiceNumber });
+  return apiFetch<ReturnableInvoice>(`/api/v1/invoices/lookup?${params.toString()}`);
+}
+
+export interface NewReturnLine {
+  invoice_item_id: string;
+  quantity: string;
+}
+
+export interface ReturnItemOut {
+  id: string;
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  packaging_name_ar: string;
+  quantity: string;
+  unit_price: string;
+  line_total: string;
+  tax_amount: string;
+}
+
+export interface ReturnSummary {
+  id: string;
+  return_number: string;
+  original_invoice_id: string;
+  original_invoice_number: string;
+  currency_code: string;
+  subtotal: string;
+  tax_amount: string;
+  total: string;
+  refund_method: RefundMethod;
+  reason: string | null;
+  customer_id: string | null;
+  created_at: string;
+}
+
+export interface ReturnDetail extends ReturnSummary {
+  items: ReturnItemOut[];
+}
+
+export function createReturn(input: {
+  original_invoice_id: string;
+  lines: NewReturnLine[];
+  reason?: string | null;
+  refund_method: RefundMethod;
+}) {
+  return apiFetch<ReturnDetail>('/api/v1/returns', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function listReturns(branchId: string) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  return apiFetch<ReturnSummary[]>(`/api/v1/returns?${params.toString()}`);
+}
+
+export function getReturn(id: string) {
+  return apiFetch<ReturnDetail>(`/api/v1/returns/${id}`);
+}
