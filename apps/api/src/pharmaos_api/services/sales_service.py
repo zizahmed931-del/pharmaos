@@ -54,6 +54,7 @@ from pharmaos_api.services import (
     prescription_service,
     tax_service,
 )
+from pharmaos_api.services.compliance import ereceipt_service
 
 
 @dataclass(frozen=True)
@@ -577,6 +578,15 @@ async def create_sale(
         method=payment_method,
         invoice_id=invoice.id,
         cash_session_id=invoice.cash_session_id,
+    )
+
+    # P2-M10: outbox-enqueue an ETA e-receipt (only for an ETA-e-receipt branch),
+    # atomic with the sale — a local insert, never a network call, so the sale
+    # never blocks on connectivity. The worker submits it later (drain).
+    await ereceipt_service.enqueue_for_invoice(
+        session,
+        invoice=invoice,
+        einvoice_system=tax_profile.einvoice_system if tax_profile else None,
     )
 
     # Audit the sale IN THE SAME transaction (CLAUDE.md: audit from the first
