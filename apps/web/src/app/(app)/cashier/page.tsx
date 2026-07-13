@@ -186,6 +186,15 @@ export default function CashierPage() {
                   )}
                 </div>
               )}
+              {/* Cash expenses out of the drawer this shift (C5) — hidden when none. */}
+              {summary.cash_expense_count > 0 && (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                  <Stat
+                    label={t('cashier.cash_expenses')}
+                    value={`${summary.cash_expenses} (${summary.cash_expense_count})`}
+                  />
+                </div>
+              )}
               {canClose && (
                 <div className="flex justify-end">
                   <Button variant="danger" onClick={() => setCloseTarget({ session, summary })}>
@@ -256,6 +265,9 @@ export default function CashierPage() {
                   />
                   {Number(z.total_refunds) > 0 && (
                     <Stat label={t('cashier.total_refunds')} value={z.total_refunds} />
+                  )}
+                  {Number(z.total_expenses) > 0 && (
+                    <Stat label={t('cashier.total_expenses')} value={z.total_expenses} />
                   )}
                 </div>
 

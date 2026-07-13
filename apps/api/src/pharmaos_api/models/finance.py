@@ -43,3 +43,8 @@ class Expense(MandatoryColumnsMixin, Base):
     payment_method: Mapped[str] = mapped_column(
         String(20), nullable=False, server_default=text("'cash'")
     )
+    # P2 review C5: a cash expense taken from the drawer links to the open
+    # cashier session so it reduces that session's expected cash.
+    cash_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("cash_sessions.id"), nullable=True
+    )

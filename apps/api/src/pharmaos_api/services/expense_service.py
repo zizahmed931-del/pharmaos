@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.errors import ApiError, ErrorCode
 from pharmaos_api.models import Branch, Expense, ExpenseCategory, User
+from pharmaos_api.services import cashier_service
 
 MAX_PAGE_SIZE = 100
 PAYMENT_METHODS = frozenset({"cash", "card", "bank_transfer"})
@@ -158,6 +159,16 @@ async def create_expense(
         raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Unknown branch.")
     await _active_category_or_422(session, expense_category_id)
 
+    # C5: a CASH expense taken from the drawer links to the actor's open session
+    # (if any) so it reduces that session's expected cash. Card/bank-transfer
+    # expenses never touch the drawer, so they carry no session link.
+    cash_session_id: uuid.UUID | None = None
+    if payment_method == "cash":
+        open_session = await cashier_service.get_open_session(
+            session, branch_id=branch_id, cashier_id=actor.id
+        )
+        cash_session_id = open_session.id if open_session is not None else None
+
     expense = Expense(
         branch_id=branch_id,
         expense_category_id=expense_category_id,
@@ -166,6 +177,7 @@ async def create_expense(
         expense_date=expense_date,
         description=(description.strip() or None) if description else None,
         payment_method=payment_method,
+        cash_session_id=cash_session_id,
         created_by=actor.id,
         updated_by=actor.id,
     )

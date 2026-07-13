@@ -19,10 +19,18 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
-async def _plan(db_session: AsyncSession, explain_sql: str) -> str:
+async def _plan(db_session: AsyncSession, explain_sql: str, *, no_bitmap: bool = False) -> str:
     """Return the EXPLAIN plan text with sequential scans disabled, so the
-    planner exposes the index path the hot query relies on."""
+    planner exposes the index path the hot query relies on.
+
+    no_bitmap also disables bitmap scans: use it when several partial indexes
+    share a `WHERE NOT is_deleted` predicate and the planner might bitmap-scan a
+    NON-ideal one for a given data distribution — forcing a plain index scan
+    makes the composite index that satisfies the ORDER BY the deterministic
+    choice. (Do NOT use it for GIN indexes — those are bitmap-only.)"""
     await db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    if no_bitmap:
+        await db_session.execute(text("SET LOCAL enable_bitmapscan = off"))
     rows = (await db_session.execute(text(explain_sql))).scalars().all()
     return "\n".join(rows)
 
@@ -118,5 +126,9 @@ async def test_expenses_branch_date_scan_is_index_backed(db_session: AsyncSessio
         "WHERE branch_id = '00000000-0000-0000-0000-000000000001' "
         "AND expense_date >= CURRENT_DATE - 30 AND NOT is_deleted "
         "ORDER BY expense_date DESC",
+        # Several expenses indexes share `WHERE NOT is_deleted`; forcing a plain
+        # index scan makes the composite (branch_id, expense_date DESC) index the
+        # deterministic pick regardless of how many rows the test DB accumulated.
+        no_bitmap=True,
     )
     assert "idx_expenses_branch_date" in plan, plan

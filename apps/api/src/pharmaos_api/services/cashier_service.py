@@ -134,7 +134,17 @@ async def session_summary(session: AsyncSession, cash_session: CashSession) -> d
     credit_pay = pay.get("store_credit")
 
     cash_total = Decimal(cash_pay[1]) if cash_pay else _ZERO
-    expected = _q2(cash_session.opening_float + cash_total)
+
+    # C5 — cash expenses paid out of THIS drawer reduce expected cash (a cash
+    # expense not accounted for would surface as a phantom overage at close).
+    exp_row = (await session.execute(text("""
+                SELECT COUNT(*), COALESCE(SUM(amount), 0)
+                FROM expenses
+                WHERE cash_session_id = :s AND NOT is_deleted AND payment_method = 'cash'
+                """).bindparams(s=cash_session.id))).one()
+    cash_expense_count = int(exp_row[0])
+    cash_expenses = Decimal(exp_row[1])
+    expected = _q2(cash_session.opening_float + cash_total - cash_expenses)
 
     tc_row = (await session.execute(text("""
                 SELECT COALESCE(SUM(tendered_amount), 0), COALESCE(SUM(change_amount), 0)
@@ -153,6 +163,8 @@ async def session_summary(session: AsyncSession, cash_session: CashSession) -> d
         "card_refund_count": int(card_pay[3]) if card_pay else 0,
         "card_refunded": str(_q2(Decimal(card_pay[4]))) if card_pay else str(_ZERO),
         "store_credit_refunded": str(_q2(Decimal(credit_pay[4]))) if credit_pay else str(_ZERO),
+        "cash_expense_count": cash_expense_count,
+        "cash_expenses": str(_q2(cash_expenses)),
         "tendered_total": str(_q2(Decimal(tc_row[0]))),
         "change_total": str(_q2(Decimal(tc_row[1]))),
         "expected_cash": str(expected),
@@ -321,6 +333,25 @@ async def day_report(
     credit_refund_n, credit_refund = _refund_bucket("store_credit")
     total_refunds = _q2(cash_refund + card_refund + credit_refund)
 
+    # C5 — the day's expenses (by payment method, on their own expense_date).
+    expense_rows = (await session.execute(text("""
+                SELECT payment_method, COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount
+                FROM expenses
+                WHERE branch_id = :b AND NOT is_deleted AND expense_date = :d
+                GROUP BY payment_method
+                """).bindparams(b=branch_id, d=day))).all()
+
+    def _expense_bucket(method: str) -> tuple[int, Decimal]:
+        for r in expense_rows:
+            if r[0] == method:
+                return int(r[1]), _q2(Decimal(r[2]))
+        return 0, _ZERO
+
+    cash_exp_n, cash_exp = _expense_bucket("cash")
+    card_exp_n, card_exp = _expense_bucket("card")
+    bank_exp_n, bank_exp = _expense_bucket("bank_transfer")
+    total_expenses = _q2(cash_exp + card_exp + bank_exp)
+
     return {
         "date": day.isoformat(),
         "sessions": await list_sessions(session, branch_id=branch_id, day=day),
@@ -329,6 +360,10 @@ async def day_report(
         "refunds_store_credit": {"count": credit_refund_n, "total": str(credit_refund)},
         "total_refunds": str(total_refunds),
         "net_total_sales": str(_q2(total_sales - total_refunds)),
+        "expenses_cash": {"count": cash_exp_n, "total": str(cash_exp)},
+        "expenses_card": {"count": card_exp_n, "total": str(card_exp)},
+        "expenses_bank_transfer": {"count": bank_exp_n, "total": str(bank_exp)},
+        "total_expenses": str(total_expenses),
         "cash_in_session": {"count": cash_in_n, "total": str(cash_in)},
         "card_in_session": {"count": card_in_n, "total": str(card_in)},
         "cash_outside_sessions": {"count": cash_out_n, "total": str(cash_out)},

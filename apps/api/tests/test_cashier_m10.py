@@ -29,7 +29,12 @@ from pharmaos_api.models import (
     Role,
     User,
 )
-from pharmaos_api.services import cashier_service, return_service, sales_service
+from pharmaos_api.services import (
+    cashier_service,
+    expense_service,
+    return_service,
+    sales_service,
+)
 from pharmaos_api.services.sales_service import SaleLine
 
 
@@ -350,6 +355,57 @@ async def test_cash_refund_reduces_expected_cash(
     assert after["expected_cash"] == "110.00"  # 50 float + 60 net cash
     # tendered/change stay invoice-sourced and unaffected by the refund.
     assert after["tendered_total"] == "100.00" and after["change_total"] == "10.00"
+
+
+async def test_cash_expense_reduces_expected_cash(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """C5: a cash expense taken from the drawer reduces expected cash; a non-cash
+    expense does not; close then reconciles with zero discrepancy."""
+    cash_session = await cashier_service.open_session(
+        db_session, actor=actor, branch_id=branch.id, opening_float=Decimal("50.00")
+    )
+    barcode = await _make_med(db_session, branch.id)
+    await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(3), barcode=barcode)],  # 90.00 cash
+        cashier=actor,
+        tendered=Decimal("100.00"),
+    )
+    category = await expense_service.create_category(db_session, actor=actor, name_ar="نثريات")
+
+    # A 25.00 CASH expense out of the drawer.
+    await expense_service.create_expense(
+        db_session,
+        actor=actor,
+        branch_id=branch.id,
+        expense_category_id=category.id,
+        amount=Decimal("25.00"),
+        expense_date=dt.date.today(),
+        payment_method="cash",
+    )
+    # A 100.00 bank-transfer expense never touches the drawer.
+    await expense_service.create_expense(
+        db_session,
+        actor=actor,
+        branch_id=branch.id,
+        expense_category_id=category.id,
+        amount=Decimal("100.00"),
+        expense_date=dt.date.today(),
+        payment_method="bank_transfer",
+    )
+
+    summary = await cashier_service.session_summary(db_session, cash_session)
+    assert summary["cash_total"] == "90.00"
+    assert summary["cash_expense_count"] == 1 and summary["cash_expenses"] == "25.00"
+    # 50 float + 90 cash sales - 25 cash expense = 115 (bank-transfer excluded).
+    assert summary["expected_cash"] == "115.00"
+
+    closed = await cashier_service.close_session(
+        db_session, actor=actor, cash_session=cash_session, counted_cash=Decimal("115.00")
+    )
+    assert closed.discrepancy == Decimal("0.00")
 
 
 async def test_card_refund_reduces_card_total_only(
