@@ -132,3 +132,24 @@ async def test_expenses_branch_date_scan_is_index_backed(db_session: AsyncSessio
         no_bitmap=True,
     )
     assert "idx_expenses_branch_date" in plan, plan
+
+
+async def test_sales_report_scan_is_index_backed(db_session: AsyncSession) -> None:
+    """P3-M1 — a branch's sales report (summary/trend/top-items) scans invoices by
+    (branch_id, created_at range) over a local-day window. Must hit the partial
+    idx_invoices_branch_created (branch_id, created_at) rather than the
+    date-leading idx_invoices_date, delivering the < 3s daily-report budget."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT id FROM invoices "
+        "WHERE branch_id = '00000000-0000-0000-0000-000000000001' "
+        "AND NOT is_deleted AND created_at >= CURRENT_DATE - 30 "
+        "AND created_at < CURRENT_DATE + 1 "
+        "ORDER BY created_at",
+        # invoices carries several branch-leading indexes (uq_invoices_number,
+        # idx_invoices_cash_session, idx_invoices_customer). ORDER BY created_at +
+        # no_bitmap makes (branch_id, created_at) the deterministic pick — it alone
+        # serves both the branch equality and the time order without a sort.
+        no_bitmap=True,
+    )
+    assert "idx_invoices_branch_created" in plan, plan
