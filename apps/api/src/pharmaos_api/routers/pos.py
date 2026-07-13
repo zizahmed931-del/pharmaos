@@ -97,6 +97,8 @@ class SaleIn(BaseModel):
     serials: list[str] = Field(default_factory=list, max_length=1000)
     # P2-M5: optional customer for loyalty accrual + purchase history.
     customer_id: uuid.UUID | None = None
+    # P2-M5 (review C3): loyalty points to redeem as a discount (needs customer_id).
+    redeem_points: int = Field(default=0, ge=0, le=10_000_000)
 
 
 @router.post("/sale")
@@ -127,6 +129,7 @@ async def create_sale(
         tendered=body.tendered,
         serials=body.serials,
         customer_id=body.customer_id,
+        redeem_points=body.redeem_points,
     )
     items = (
         (await session.execute(select(InvoiceItem).where(InvoiceItem.invoice_id == invoice.id)))
@@ -139,8 +142,10 @@ async def create_sale(
             "invoice_number": invoice.invoice_number,
             "currency_code": invoice.currency_code,
             "subtotal": str(invoice.subtotal),
+            "discount_amount": str(invoice.discount_amount),
             "tax_amount": str(invoice.tax_amount),
             "total": str(invoice.total),
+            "points_redeemed": body.redeem_points if invoice.customer_id is not None else 0,
             "payment_method": invoice.payment_method,
             "tendered_amount": (
                 str(invoice.tendered_amount) if invoice.tendered_amount is not None else None

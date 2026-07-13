@@ -273,6 +273,46 @@ async def accrue_for_sale(
     return points
 
 
+async def redeem_for_sale(
+    session: AsyncSession,
+    *,
+    cashier: User,
+    customer_id: uuid.UUID,
+    points: int,
+    invoice_id: uuid.UUID,
+) -> None:
+    """Redeem loyalty points as a sale discount — NO commit (runs inside the sale
+    transaction, so the redemption and the invoice persist or roll back together).
+    Rejects an unknown/inactive customer or an insufficient balance (1 pt = 1
+    currency unit; the caller has already turned `points` into the discount)."""
+    if points <= 0:
+        return
+    customer = (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer_id, Customer.is_deleted.is_(False))
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if customer is None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Unknown customer.")
+    if not customer.is_active:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 422, message="Customer is inactive.")
+    if points > int(customer.loyalty_points):
+        raise ApiError(
+            ErrorCode.VALIDATION_FAILED, 422, message="Not enough loyalty points to redeem."
+        )
+    await _apply_loyalty(
+        session,
+        actor=cashier,
+        customer=customer,
+        points_delta=-points,
+        txn_type="redeem",
+        reference_type="invoice",
+        reference_id=invoice_id,
+    )
+
+
 async def reverse_for_return(
     session: AsyncSession,
     *,

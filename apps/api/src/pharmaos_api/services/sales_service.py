@@ -286,6 +286,7 @@ async def create_sale(
     tendered: Decimal | None = None,
     serials: list[str] | None = None,
     customer_id: uuid.UUID | None = None,
+    redeem_points: int = 0,
 ) -> Invoice:
     """Create a completed sale invoice in ONE transaction (see module docstring).
 
@@ -440,9 +441,26 @@ async def create_sale(
 
     # P2-M6 — prices are VAT-INCLUSIVE: the customer total stays the sum of gross
     # line prices; VAT is extracted into tax_amount and subtotal is the net.
-    total = gross_total
     tax_amount = tax_total
     net_subtotal = (gross_total - tax_total).quantize(Decimal("0.01"))
+
+    # P2-M5 (review C3) — loyalty redemption applied as a flat discount off the
+    # VAT-inclusive gross (1 pt = 1 currency unit). Requires a customer; cannot
+    # exceed the sale. The points are consumed after the invoice flushes (below),
+    # atomically with the sale. Per-line VAT snapshots are unchanged (the discount
+    # is a loyalty rebate, not a change to the taxable base).
+    discount_amount = Decimal("0.00")
+    if redeem_points > 0:
+        if customer_id is None:
+            raise ApiError(
+                ErrorCode.VALIDATION_FAILED, 422, message="Redemption requires a customer."
+            )
+        discount_amount = Decimal(redeem_points).quantize(Decimal("0.01"))
+        if discount_amount > gross_total:
+            raise ApiError(
+                ErrorCode.VALIDATION_FAILED, 422, message="Redemption exceeds the sale total."
+            )
+    total = (gross_total - discount_amount).quantize(Decimal("0.01"))
 
     # M10 — customer cash carry-through (validated against the AUTHORITATIVE total).
     tendered_amount: Decimal | None = None
@@ -469,7 +487,7 @@ async def create_sale(
         status="completed",
         currency_code=branch.currency_code,
         subtotal=net_subtotal,
-        discount_amount=Decimal("0.00"),
+        discount_amount=discount_amount,
         tax_amount=tax_amount,
         total=total,
         payment_method=payment_method,
@@ -525,11 +543,19 @@ async def create_sale(
             serials=serials,
         )
 
-    # P2-M5: attach the customer and accrue loyalty points — atomic with the
-    # sale (an unknown/inactive customer rolls the whole sale back). Validation
-    # happens in accrue_for_sale before we set the FK, so the customer_id link
-    # can never violate the constraint at commit.
+    # P2-M5: attach the customer, redeem points (if any) as the discount, then
+    # accrue on the amount actually paid — all atomic with the sale (an unknown/
+    # inactive customer or insufficient balance rolls the whole sale back).
+    # Redeem BEFORE accrue so the balance moves down then up on the one row.
     if customer_id is not None:
+        if redeem_points > 0:
+            await customer_service.redeem_for_sale(
+                session,
+                cashier=cashier,
+                customer_id=customer_id,
+                points=redeem_points,
+                invoice_id=invoice.id,
+            )
         await customer_service.accrue_for_sale(
             session,
             cashier=cashier,
@@ -566,6 +592,23 @@ async def create_sale(
             "line_count": len(pending_items),
         },
     )
+    # A loyalty-redemption discount is an audited operation (CLAUDE.md
+    # AUDITED_OPERATIONS: invoice.discount_applied).
+    if discount_amount > 0:
+        await audit_service.record(
+            session,
+            AuditAction.INVOICE_DISCOUNT_APPLIED,
+            actor=cashier,
+            branch_id=branch_id,
+            entity_type="invoice",
+            entity_id=invoice.id,
+            metadata={
+                "invoice_number": invoice.invoice_number,
+                "discount_amount": str(discount_amount),
+                "source": "loyalty_redemption",
+                "points_redeemed": redeem_points,
+            },
+        )
 
     await session.commit()  # ONE atomic unit: batches + movements + invoice + items + audit
     await session.refresh(invoice)

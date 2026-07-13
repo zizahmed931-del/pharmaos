@@ -75,6 +75,8 @@ interface DoneInfo {
   change: string | null;
   paymentMethod: 'cash' | 'card';
   pointsEarned: number | null;
+  pointsRedeemed: number;
+  discountAmount: string;
   taxAmount: string;
 }
 
@@ -105,6 +107,7 @@ export default function PosPage() {
   const [payOpen, setPayOpen] = useState(false);
   const [rxPickerFor, setRxPickerFor] = useState<number | null>(null);
   const [customer, setCustomer] = useState<CustomerSummary | null>(null);
+  const [redeemPoints, setRedeemPoints] = useState(0);
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [printState, setPrintState] = useState<PrintState>('idle');
   const [receiptData, setReceiptData] = useState<InvoiceReceipt | null>(null);
@@ -299,6 +302,12 @@ export default function PosPage() {
   const hasInvalidQty = totals.some((x) => !Number.isFinite(x));
   const hasUnlinkedRx = cart.some((l) => l.requiresPrescription && !l.prescriptionItemId);
   const clientTotal = totals.reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
+  // P2-M5 (C3) — loyalty redemption: 1 pt = 1 currency unit, capped by the
+  // customer's balance and the sale total. effectiveRedeem clamps stale input
+  // (e.g. after the cart shrinks) without needing an effect.
+  const maxRedeem = customer ? Math.min(customer.loyalty_points, Math.floor(clientTotal)) : 0;
+  const effectiveRedeem = Math.max(0, Math.min(redeemPoints, maxRedeem));
+  const netTotal = clientTotal - effectiveRedeem;
 
   const openPay = () => {
     if (cart.length === 0) return;
@@ -318,6 +327,7 @@ export default function PosPage() {
     setSel(0);
     setDone(null);
     setCustomer(null);
+    setRedeemPoints(0);
     setPrintState('idle');
     setReceiptData(null);
     setScanVal('');
@@ -677,7 +687,41 @@ export default function PosPage() {
       </Card>
 
       {/* Customer (optional) — loyalty accrual + purchase history */}
-      <CustomerPicker customer={customer} onPick={setCustomer} onClear={() => setCustomer(null)} />
+      <CustomerPicker
+        customer={customer}
+        onPick={setCustomer}
+        onClear={() => {
+          setCustomer(null);
+          setRedeemPoints(0);
+        }}
+      />
+
+      {/* Loyalty redemption (only when a customer with points is attached) */}
+      {customer && customer.loyalty_points > 0 && cart.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-lg)] border border-primary-200 bg-primary-50/50 p-3">
+          <Label className="text-sm text-slate-700">
+            {t('pos.redeem_points')}{' '}
+            <span className="text-xs text-slate-500">
+              ({t('customers.balance')}: {customer.loyalty_points})
+            </span>
+          </Label>
+          <div className="flex items-center gap-2">
+            <Input
+              className="h-9 w-28 text-center tabular-nums"
+              inputMode="numeric"
+              value={redeemPoints === 0 ? '' : String(redeemPoints)}
+              placeholder="0"
+              onChange={(e) => {
+                const n = Math.floor(Number(e.target.value));
+                setRedeemPoints(Number.isFinite(n) && n > 0 ? n : 0);
+              }}
+            />
+            <Button size="sm" variant="outline" onClick={() => setRedeemPoints(maxRedeem)}>
+              {t('pos.redeem_max')}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Totals + pay */}
       <div className="flex items-center justify-between rounded-[var(--radius-lg)] border border-border bg-white p-4">
@@ -686,8 +730,13 @@ export default function PosPage() {
         </div>
         <div className="flex items-center gap-4">
           <div className="text-end">
+            {effectiveRedeem > 0 && (
+              <div className="text-xs text-emerald-700">
+                {t('pos.redeem_discount')}: −{effectiveRedeem.toFixed(2)} {currency}
+              </div>
+            )}
             <div className="text-xl font-bold text-slate-900">
-              {t('pos.total')}: <span className="tabular-nums">{clientTotal.toFixed(2)}</span>{' '}
+              {t('pos.total')}: <span className="tabular-nums">{netTotal.toFixed(2)}</span>{' '}
               <span className="text-sm font-normal text-slate-500">{currency}</span>
             </div>
             <div className="text-xs text-slate-400">{t('pos.vat_inclusive')}</div>
@@ -711,7 +760,8 @@ export default function PosPage() {
         <PaymentModal
           branchId={branchId}
           cart={cart}
-          clientTotal={clientTotal}
+          clientTotal={netTotal}
+          redeemPoints={effectiveRedeem}
           currency={currency}
           customerId={customer?.id ?? null}
           onClose={() => {
@@ -761,6 +811,12 @@ export default function PosPage() {
             <p className="mb-1 text-sm text-slate-600">
               {t('pos.invoice_no')}: <span className="font-mono">{done.invoiceNumber}</span>
             </p>
+            {done.pointsRedeemed > 0 && (
+              <p className="mb-1 text-xs text-emerald-700">
+                {t('pos.redeem_discount')}: −{done.discountAmount} {done.currency} (
+                {done.pointsRedeemed} {t('customers.points')})
+              </p>
+            )}
             <p className="mb-1 text-lg font-semibold text-slate-900">
               {t('pos.total')}:{' '}
               <span className="tabular-nums">
@@ -1029,6 +1085,7 @@ function PaymentModal({
   branchId,
   cart,
   clientTotal,
+  redeemPoints,
   currency,
   customerId,
   onClose,
@@ -1037,6 +1094,7 @@ function PaymentModal({
   branchId: string;
   cart: CartLine[];
   clientTotal: number;
+  redeemPoints: number;
   currency: string;
   customerId: string | null;
   onClose: () => void;
@@ -1060,6 +1118,8 @@ function PaymentModal({
         ...(method === 'cash' && tendered ? { tendered: String(Number(tendered)) } : {}),
         // M5 — attach the customer for loyalty accrual + purchase history.
         ...(customerId ? { customer_id: customerId } : {}),
+        // M5 (C3) — redeem loyalty points as a discount (needs a customer).
+        ...(customerId && redeemPoints > 0 ? { redeem_points: redeemPoints } : {}),
       }),
     onSuccess: (result: PosSaleResult) => {
       // Server change_amount is authoritative (M10); fall back to local math.
@@ -1075,6 +1135,8 @@ function PaymentModal({
         change,
         paymentMethod: method,
         pointsEarned: result.points_earned,
+        pointsRedeemed: result.points_redeemed,
+        discountAmount: result.discount_amount,
         taxAmount: result.tax_amount,
       });
     },

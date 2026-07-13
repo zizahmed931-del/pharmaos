@@ -553,8 +553,10 @@ export interface PosSaleResult {
   invoice_number: string;
   currency_code: string;
   subtotal: string;
+  discount_amount: string;
   tax_amount: string;
   total: string;
+  points_redeemed: number;
   payment_method: string;
   tendered_amount: string | null;
   change_amount: string | null;
@@ -570,6 +572,7 @@ export function createPosSale(input: {
   payment_method: 'cash' | 'card';
   tendered?: string;
   customer_id?: string;
+  redeem_points?: number;
 }) {
   return apiFetch<PosSaleResult>('/api/v1/pos/sale', {
     method: 'POST',

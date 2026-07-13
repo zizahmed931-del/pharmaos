@@ -187,6 +187,99 @@ async def test_sale_accrues_loyalty_points_atomically(
     assert len(history) == 1 and history[0]["invoice_number"] == invoice.invoice_number
 
 
+async def test_redeem_points_discounts_sale(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """C3: redeeming points applies a 1:1 discount, consumes the points, then the
+    customer earns on the amount actually paid — all atomic with the sale."""
+    med_id, barcode = await _make_sellable_med(db_session)
+    await _receive(db_session, actor, branch, med_id)
+    customer = await customer_service.create_customer(db_session, actor=actor, name="مستبدِل")
+    # Seed a balance with a first sale (2 x 30 = 60 -> 60 points).
+    await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],
+        cashier=actor,
+        customer_id=customer.id,
+    )
+    await db_session.refresh(customer)
+    assert customer.loyalty_points == 60
+
+    # Second sale (gross 60) redeeming 20 points -> discount 20, total 40.
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=barcode)],
+        cashier=actor,
+        customer_id=customer.id,
+        redeem_points=20,
+    )
+    assert invoice.discount_amount == Decimal("20.00")
+    assert invoice.total == Decimal("40.00")
+    assert invoice.subtotal == Decimal("60.00")  # net stays gross-of-VAT (medicine exempt)
+
+    # Balance: 60 - 20 redeemed + 40 earned on the paid amount = 80.
+    await db_session.refresh(customer)
+    assert customer.loyalty_points == 80
+    assert await customer_service.recompute_points(db_session, customer.id) == 80
+
+    # A discount is audited (invoice.discount_applied).
+    audited = (
+        await db_session.execute(
+            text(
+                "SELECT COUNT(*) FROM audit_logs WHERE action = 'invoice.discount_applied' "
+                "AND entity_id = :i"
+            ).bindparams(i=invoice.id)
+        )
+    ).scalar_one()
+    assert audited == 1
+
+
+async def test_redeem_requires_customer(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    med_id, barcode = await _make_sellable_med(db_session)
+    await _receive(db_session, actor, branch, med_id)
+    with pytest.raises(ApiError) as exc:
+        await sales_service.create_sale(
+            db_session,
+            branch_id=branch.id,
+            lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+            cashier=actor,
+            redeem_points=5,
+        )
+    assert exc.value.code == ErrorCode.VALIDATION_FAILED
+
+
+async def test_redeem_over_balance_rolls_back(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    med_id, barcode = await _make_sellable_med(db_session)
+    await _receive(db_session, actor, branch, med_id)
+    customer = await customer_service.create_customer(db_session, actor=actor, name="بلا رصيد")
+    # No points yet; redeeming 10 (also within the 30.00 sale) must be refused.
+    with pytest.raises(ApiError) as exc:
+        await sales_service.create_sale(
+            db_session,
+            branch_id=branch.id,
+            lines=[SaleLine(quantity=Decimal(1), barcode=barcode)],
+            cashier=actor,
+            customer_id=customer.id,
+            redeem_points=10,
+        )
+    assert exc.value.code == ErrorCode.VALIDATION_FAILED
+    await db_session.rollback()
+    await db_session.refresh(customer)
+    assert customer.loyalty_points == 0
+    count = (
+        await db_session.execute(
+            text("SELECT COUNT(*) FROM invoices WHERE customer_id = :c").bindparams(c=customer.id)
+        )
+    ).scalar_one()
+    assert count == 0
+
+
 async def test_sale_with_unknown_customer_rolls_back(
     db_session: AsyncSession, actor: User, branch: Branch
 ) -> None:

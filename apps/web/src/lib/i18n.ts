@@ -356,6 +356,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     'pos.clear_customer': 'إزالة',
     'pos.walk_in_hint': 'اترك فارغاً لعميل عابر — أو اربط عميلاً لتراكم نقاط الولاء',
     'pos.points_earned': 'نقاط مكتسبة',
+    'pos.redeem_points': 'استبدال نقاط الولاء',
+    'pos.redeem_max': 'الأقصى',
+    'pos.redeem_discount': 'خصم الولاء',
     // Customers (P2-M5)
     'customers.title': 'العملاء',
     'customers.add': 'إضافة عميل',
@@ -948,6 +951,9 @@ const dictionaries: Record<Locale, Record<string, string>> = {
     'pos.clear_customer': 'Remove',
     'pos.walk_in_hint': 'Leave empty for a walk-in — or attach a customer to earn loyalty points',
     'pos.points_earned': 'Points earned',
+    'pos.redeem_points': 'Redeem loyalty points',
+    'pos.redeem_max': 'Max',
+    'pos.redeem_discount': 'Loyalty discount',
     // Customers (P2-M5)
     'customers.title': 'Customers',
     'customers.add': 'Add customer',
