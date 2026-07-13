@@ -99,6 +99,15 @@ export const PERMISSIONS: Record<string, readonly SystemRoleCode[]> = {
   // =================== الامتثال (v1.1) ===================
   'compliance.ereceipt': ['super_admin', 'branch_manager'],
   'compliance.tt_report': ['super_admin', 'branch_manager', 'pharmacist'],
+
+  // =================== الوصفات الطبية (v1.1) ===================
+  'prescriptions.view': ['super_admin', 'branch_manager', 'pharmacist'],
+  'prescriptions.create': ['super_admin', 'branch_manager', 'pharmacist'],
+  'prescriptions.edit': ['super_admin', 'branch_manager', 'pharmacist'],
+
+  // =================== سجل المواد الخاضعة للرقابة (v1.1) ===================
+  // Written automatically by the sale flow — no manual create/edit permission.
+  'controlled_substances.view': ['super_admin', 'branch_manager', 'pharmacist'],
 };
 
 /** Frontend guard helper — UX only; backend checks are authoritative. */

@@ -32,6 +32,9 @@ class ErrorCode:
     PAPER_NOT_THERMAL = "E-PRN-003"
     SESSION_ALREADY_OPEN = "E-CSH-001"
     SESSION_NOT_OPEN = "E-CSH-002"
+    PRESCRIPTION_REQUIRED = "E-RX-001"
+    PRESCRIPTION_EXCEEDED = "E-RX-002"
+    PRESCRIPTION_INVALID = "E-RX-003"
 
 
 # Fallback messages in English (the neutral request-language fallback; the
@@ -56,6 +59,9 @@ _FALLBACK_MESSAGES: dict[str, str] = {
     ErrorCode.PAPER_NOT_THERMAL: "Branch paper size is not 80mm thermal.",
     ErrorCode.SESSION_ALREADY_OPEN: "A cash session is already open for this cashier.",
     ErrorCode.SESSION_NOT_OPEN: "The cash session is not open.",
+    ErrorCode.PRESCRIPTION_REQUIRED: "This medication requires a linked prescription.",
+    ErrorCode.PRESCRIPTION_EXCEEDED: "Quantity exceeds what remains on the prescription.",
+    ErrorCode.PRESCRIPTION_INVALID: "Prescription item does not match this medication.",
 }
 
 

@@ -43,7 +43,7 @@ async def test_backup_roundtrip_and_restore_drill(
 
     counts = backup_service.restore_drill(backup_file, drill_database_url=drill_db_url)
     assert counts["users"] >= 1  # the seeded user made it through the drill
-    assert counts["permissions"] == 36
+    assert counts["permissions"] == 40  # P2-M8 added prescriptions.*/controlled_substances.view
 
 
 def test_tampered_backup_rejected(tmp_path: Path) -> None:

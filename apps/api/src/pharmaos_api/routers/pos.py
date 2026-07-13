@@ -83,6 +83,8 @@ class SaleLineIn(BaseModel):
     medication_id: uuid.UUID | None = None
     packaging_id: uuid.UUID | None = None
     quantity: Decimal = Field(gt=0, le=Decimal("100000"))
+    # P2-M8: required when the resolved medication has requires_prescription=True.
+    prescription_item_id: uuid.UUID | None = None
 
 
 class SaleIn(BaseModel):
@@ -116,6 +118,7 @@ async def create_sale(
                 barcode=x.barcode,
                 medication_id=x.medication_id,
                 packaging_id=x.packaging_id,
+                prescription_item_id=x.prescription_item_id,
             )
             for x in body.lines
         ],

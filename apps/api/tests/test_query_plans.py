@@ -93,3 +93,17 @@ async def test_customer_name_search_is_index_backed(db_session: AsyncSession) ->
         "WHERE normalize_arabic(name) % normalize_arabic('محمد')",
     )
     assert "idx_customers_name_trgm" in plan, plan
+
+
+async def test_controlled_substance_log_medication_scan_is_index_backed(
+    db_session: AsyncSession,
+) -> None:
+    """P2-M8 — a pharmacist looking up one controlled drug's dispensing history
+    must hit idx_controlled_log_medication (medication_id, created_at DESC)."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT id FROM controlled_substance_log "
+        "WHERE medication_id = '00000000-0000-0000-0000-000000000001' "
+        "ORDER BY created_at DESC",
+    )
+    assert "idx_controlled_log_medication" in plan, plan

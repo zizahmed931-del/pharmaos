@@ -11,6 +11,13 @@ Inventory rules enforced here (CLAUDE.md):
 - FEFO: nearest expiry first
 - no sale from a batch with status != 'active' or an expired batch (E-STK-002)
 - insufficient stock -> E-STK-001, nothing persisted
+
+P2-M8 — prescriptions + controlled substances (same one transaction):
+- a requires_prescription medication needs a linked, valid prescription_item
+  with enough remaining quantity (E-RX-001/002/003); dispensing increments the
+  item's running total and the prescription's status is recomputed
+- a controlled_substance medication ALWAYS writes an append-only
+  controlled_substance_log row per batch slice, regardless of Rx linkage
 """
 
 import datetime as dt
@@ -40,9 +47,11 @@ from pharmaos_api.services import (
     audit_service,
     cashier_service,
     catalog_service,
+    controlled_substance_service,
     customer_service,
     pack_serial_service,
     payment_service,
+    prescription_service,
     tax_service,
 )
 
@@ -70,12 +79,18 @@ class SaleLine:
     - barcode + packaging_id: POS unit switching — the cashier scanned the pack
       but sells a different level (box/strip/tablet) of the SAME medication;
     - medication_id + packaging_id: name-search line (no barcode on hand).
+
+    prescription_item_id (P2-M8): required when the resolved medication has
+    requires_prescription=True (else E-RX-001); validated against the item's
+    remaining quantity (else E-RX-002) and its parent prescription's status
+    (else E-RX-003 / PRESCRIPTION_INVALID).
     """
 
     quantity: Decimal  # at the sold packaging level
     barcode: str | None = None
     medication_id: uuid.UUID | None = None
     packaging_id: uuid.UUID | None = None
+    prescription_item_id: uuid.UUID | None = None
 
 
 def _scan_result(medication: Medication, packaging: MedicationPackaging) -> ScanResult:
@@ -297,6 +312,11 @@ async def create_sale(
     tax_total = Decimal("0.00")
     pending_items: list[InvoiceItem] = []
     pending_movements: list[StockMovement] = []
+    # P2-M8 — controlled-substance log entries (one per batch slice, written
+    # after invoice_item ids resolve) and the set of prescriptions touched this
+    # sale (status is recomputed once per prescription, after all lines).
+    pending_controlled: list[tuple[InvoiceItem, uuid.UUID | None]] = []
+    touched_prescriptions: set[uuid.UUID] = set()
 
     for line in lines:
         if line.quantity <= 0:
@@ -304,6 +324,31 @@ async def create_sale(
         scan = await _resolve_line(session, line)
         factor = await _smallest_unit_factor(session, scan.medication_id, scan.level)
         needed = (line.quantity * factor).quantize(Decimal("0.001"))
+
+        # P2-M8 — a prescription-required medication must link a prescription
+        # item with enough remaining quantity; the item's dispensed total is
+        # incremented now (rolls back with the whole sale on any later failure,
+        # since nothing commits until the end).
+        line_prescription_id: uuid.UUID | None = None
+        if line.prescription_item_id is not None:
+            rx_item = await prescription_service.get_item_for_update(
+                session, line.prescription_item_id
+            )
+            if rx_item.medication_id != scan.medication_id:
+                raise ApiError(
+                    ErrorCode.PRESCRIPTION_INVALID,
+                    422,
+                    message="Prescription item does not match this medication.",
+                )
+            rx_remaining = rx_item.prescribed_qty_smallest - rx_item.dispensed_qty_smallest
+            if needed > rx_remaining:
+                raise ApiError(ErrorCode.PRESCRIPTION_EXCEEDED, 409)
+            rx_item.dispensed_qty_smallest = rx_item.dispensed_qty_smallest + needed
+            rx_item.updated_by = cashier.id
+            line_prescription_id = rx_item.prescription_id
+            touched_prescriptions.add(rx_item.prescription_id)
+        elif scan.requires_prescription:
+            raise ApiError(ErrorCode.PRESCRIPTION_REQUIRED, 422)
 
         # FEFO: nearest expiry first; lock candidate rows for this transaction.
         stmt = (
@@ -368,6 +413,11 @@ async def create_sale(
                     created_by=cashier.id,
                 )
             )
+            # P2-M8 — one controlled-substance register row per batch slice
+            # (mirrors the existing per-slice stock_movements granularity);
+            # written after invoice_item ids resolve, below.
+            if scan.controlled_substance:
+                pending_controlled.append((pending_items[-1], line_prescription_id))
             pending_movements.append(
                 StockMovement(
                     branch_id=branch_id,
@@ -382,6 +432,11 @@ async def create_sale(
             from pharmaos_api.services.inventory_service import apply_cache_delta
 
             await apply_cache_delta(session, branch_id, scan.medication_id, -slice_qty)
+
+    # P2-M8 — re-derive each touched prescription's status now that every
+    # line's dispensed_qty_smallest increment is applied (still no commit).
+    for prescription_id in touched_prescriptions:
+        await prescription_service.recompute_status(session, prescription_id)
 
     # P2-M6 — prices are VAT-INCLUSIVE: the customer total stays the sum of gross
     # line prices; VAT is extracted into tax_amount and subtotal is the net.
@@ -441,6 +496,23 @@ async def create_sale(
         movement.reference_id = invoice.id
     session.add_all(pending_items)
     session.add_all(pending_movements)
+
+    # P2-M8 — the controlled-substance register needs the FLUSHED invoice_item
+    # ids (server-generated UUIDs), so flush now before writing log rows.
+    if pending_controlled:
+        await session.flush()
+        for item, rx_id in pending_controlled:
+            await controlled_substance_service.record_dispense(
+                session,
+                actor=cashier,
+                branch_id=branch_id,
+                medication_id=item.medication_id,
+                batch_id=item.batch_id,
+                invoice_id=invoice.id,
+                invoice_item_id=item.id,
+                quantity_dispensed=item.qty_smallest,
+                prescription_id=rx_id,
+            )
 
     # P2-M3: link scanned 2D pack serials to this invoice (dispensed) — atomic
     # with the sale, so an unknown/already-dispensed serial rolls it ALL back.

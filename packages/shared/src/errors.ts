@@ -26,6 +26,9 @@ export const ERROR_CODES = {
   PAPER_NOT_THERMAL: 'E-PRN-003', // مقاس الورق ليس 80mm حرارياً
   SESSION_ALREADY_OPEN: 'E-CSH-001', // لدى الكاشير جلسة مفتوحة بالفعل
   SESSION_NOT_OPEN: 'E-CSH-002', // الجلسة ليست مفتوحة
+  PRESCRIPTION_REQUIRED: 'E-RX-001', // الدواء يتطلب وصفة ولم تُربط
+  PRESCRIPTION_EXCEEDED: 'E-RX-002', // الكمية تتجاوز المتبقي من الوصفة
+  PRESCRIPTION_INVALID: 'E-RX-003', // بند الوصفة غير مطابق لهذا الصنف
   UNEXPECTED: 'E-SYS-001',
 } as const;
 

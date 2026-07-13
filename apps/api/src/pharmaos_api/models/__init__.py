@@ -21,6 +21,7 @@ from pharmaos_api.models.operations import (
     ReturnItem,
     StockMovement,
 )
+from pharmaos_api.models.prescription import ControlledSubstanceLog, Prescription, PrescriptionItem
 from pharmaos_api.models.purchasing import PurchaseItem, PurchaseOrder, Supplier
 from pharmaos_api.models.rbac import Permission, Role, RolePermission
 from pharmaos_api.models.reference import Country, Currency, TaxProfile
@@ -32,6 +33,7 @@ __all__ = [
     "Base",
     "Branch",
     "CashSession",
+    "ControlledSubstanceLog",
     "Country",
     "Currency",
     "Customer",
@@ -47,6 +49,8 @@ __all__ = [
     "PackSerial",
     "Payment",
     "Permission",
+    "Prescription",
+    "PrescriptionItem",
     "PurchaseItem",
     "PurchaseOrder",
     "Return",
