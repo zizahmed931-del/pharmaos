@@ -37,7 +37,10 @@ from pharmaos_api.services import inventory_service
 
 MAX_PAGE_SIZE = 100
 _OPEN_FOR_RECEIVE = {"approved", "partially_received"}
-_CANCELLABLE = {"draft", "pending_approval", "approved"}
+# Review D4: a partially_received PO can be CANCELLED to close out the
+# undelivered remainder — already-received stock stays booked (it is real
+# inventory); cancelling just stops expecting the rest.
+_CANCELLABLE = {"draft", "pending_approval", "approved", "partially_received"}
 
 
 @dataclass(frozen=True)

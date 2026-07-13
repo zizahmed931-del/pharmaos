@@ -13,6 +13,7 @@ from decimal import Decimal
 import httpx
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.errors import ApiError, ErrorCode
@@ -396,6 +397,20 @@ async def test_returned_stock_active_when_branch_opts_in(
     assert len(ret_batches) == 1 and ret_batches[0].status == "active"
     # Immediately sellable: 5 - 3 sold + 1 returned-to-active = 3.
     assert await _cached(db_session, branch, med_id) == Decimal("3")
+
+
+async def test_payment_source_is_xor(db_session: AsyncSession, branch: Branch) -> None:
+    """Review D3: the payments source constraint is a true XOR — a row linked to
+    NEITHER a sale nor a return (and, symmetrically, one linked to both) is
+    rejected by the database, not merely by convention."""
+    with pytest.raises(IntegrityError):
+        await db_session.execute(
+            text(
+                "INSERT INTO payments (branch_id, amount, method) "
+                "VALUES (:b, 10, 'cash')"  # neither invoice_id nor return_id
+            ).bindparams(b=branch.id)
+        )
+    await db_session.rollback()
 
 
 async def test_loyalty_points_reversed_on_return(

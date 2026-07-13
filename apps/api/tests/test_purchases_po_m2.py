@@ -257,6 +257,53 @@ async def test_full_lifecycle_receive_updates_inventory(admin, branch, db_sessio
     assert drift.json()["data"]["ok"] is True
 
 
+async def test_partially_received_po_can_be_cancelled(admin, branch, db_session: AsyncSession):  # type: ignore[no-untyped-def]
+    """Review D4: a partially-received PO can be cancelled to close out the
+    undelivered remainder; the stock already received stays booked."""
+    client, csrf = admin
+    supplier_id = await _make_supplier(client, csrf)
+    med, pkg = await _make_med(db_session)
+    po = (
+        await _create_po(
+            client,
+            csrf,
+            branch_id=str(branch.id),
+            supplier_id=supplier_id,
+            lines=[
+                {"medication_id": med, "packaging_id": pkg, "qty_ordered": "100", "unit_cost": "2"}
+            ],
+        )
+    ).json()["data"]
+    po_id, item_id = po["id"], po["items"][0]["id"]
+    await _post(client, csrf, f"/api/v1/purchases/orders/{po_id}/submit")
+    await _post(client, csrf, f"/api/v1/purchases/orders/{po_id}/approve")
+    r = await client.post(
+        f"/api/v1/purchases/orders/{po_id}/receive",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "receipts": [
+                {
+                    "purchase_item_id": item_id,
+                    "batch_number": "B-1",
+                    "expiry_date": FUTURE,
+                    "quantity": "40",
+                }
+            ]
+        },
+    )
+    assert r.json()["data"]["status"] == "partially_received"
+
+    # Close out the remaining 60 by cancelling.
+    cancelled = await _post(client, csrf, f"/api/v1/purchases/orders/{po_id}/cancel")
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["data"]["status"] == "cancelled"
+
+    # The 40 already received remain in inventory (one batch).
+    inv = await client.get("/api/v1/inventory", params={"branch_id": str(branch.id)})
+    mine = next(x for x in inv.json()["data"] if x["medication_id"] == med)
+    assert mine["cached_quantity"] in ("40.000", "40")
+
+
 async def test_invalid_transitions(admin, branch, db_session: AsyncSession):  # type: ignore[no-untyped-def]
     client, csrf = admin
     supplier_id = await _make_supplier(client, csrf)
