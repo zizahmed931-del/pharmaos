@@ -60,6 +60,7 @@ interface DoneInfo {
   change: string | null;
   paymentMethod: 'cash' | 'card';
   pointsEarned: number | null;
+  taxAmount: string;
 }
 
 type PrintState = 'idle' | 'printing' | 'ok' | 'unconfigured' | 'paper' | 'failed';
@@ -635,9 +636,12 @@ export default function PosPage() {
           {t('pos.items_count')}: <span className="tabular-nums">{cart.length}</span>
         </div>
         <div className="flex items-center gap-4">
-          <div className="text-xl font-bold text-slate-900">
-            {t('pos.total')}: <span className="tabular-nums">{clientTotal.toFixed(2)}</span>{' '}
-            <span className="text-sm font-normal text-slate-500">{currency}</span>
+          <div className="text-end">
+            <div className="text-xl font-bold text-slate-900">
+              {t('pos.total')}: <span className="tabular-nums">{clientTotal.toFixed(2)}</span>{' '}
+              <span className="text-sm font-normal text-slate-500">{currency}</span>
+            </div>
+            <div className="text-xs text-slate-400">{t('pos.vat_inclusive')}</div>
           </div>
           <Button size="lg" disabled={cart.length === 0 || hasInvalidQty} onClick={openPay}>
             {t('pos.pay')}
@@ -683,6 +687,14 @@ export default function PosPage() {
                 {done.total} {done.currency}
               </span>
             </p>
+            {Number(done.taxAmount) > 0 && (
+              <p className="mb-1 text-xs text-slate-500">
+                {t('pos.vat_included')}:{' '}
+                <span className="tabular-nums">
+                  {done.taxAmount} {done.currency}
+                </span>
+              </p>
+            )}
             {done.change !== null && (
               <p className="mb-3 text-lg text-primary-700">
                 {t('pos.change')}:{' '}
@@ -807,6 +819,14 @@ function PrintableReceipt({ receipt }: { receipt: InvoiceReceipt }) {
             <span>{t('receipt.discount')}</span>
             <span className="tabular-nums">
               {receipt.discount} {receipt.currency_symbol}
+            </span>
+          </div>
+        )}
+        {Number(receipt.tax) > 0 && (
+          <div className="flex justify-between">
+            <span>{t('receipt.tax')}</span>
+            <span className="tabular-nums">
+              {receipt.tax} {receipt.currency_symbol}
             </span>
           </div>
         )}
@@ -974,6 +994,7 @@ function PaymentModal({
         change,
         paymentMethod: method,
         pointsEarned: result.points_earned,
+        taxAmount: result.tax_amount,
       });
     },
     onError: (e) => toast.error(t(`errors.${errCode(e)}`)),

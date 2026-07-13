@@ -20,7 +20,7 @@ from pharmaos_api.models.operations import (
 )
 from pharmaos_api.models.purchasing import PurchaseItem, PurchaseOrder, Supplier
 from pharmaos_api.models.rbac import Permission, Role, RolePermission
-from pharmaos_api.models.reference import Country, Currency
+from pharmaos_api.models.reference import Country, Currency, TaxProfile
 from pharmaos_api.models.settings import Settings
 from pharmaos_api.models.user import User
 
@@ -50,5 +50,6 @@ __all__ = [
     "Settings",
     "StockMovement",
     "Supplier",
+    "TaxProfile",
     "User",
 ]

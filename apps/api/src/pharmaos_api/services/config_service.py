@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.audit import AuditAction
 from pharmaos_api.errors import ApiError, ErrorCode
-from pharmaos_api.models import Branch, Country, Currency, Settings, User
+from pharmaos_api.models import Branch, Country, Currency, Settings, TaxProfile, User
 from pharmaos_api.services import audit_service
 
 _PAPER_SIZES = {"80mm", "A4", "A5"}
@@ -184,3 +184,62 @@ async def upsert_settings(
 
 async def count_branches(session: AsyncSession) -> int:
     return (await session.execute(select(func.count(Branch.id)))).scalar_one()
+
+
+# --------------------------- tax profile (P2-M6) ---------------------------
+
+_TAX_FIELDS = ("name", "vat_rate", "medicine_vat_rate", "einvoice_system")
+
+
+async def get_tax_profile(session: AsyncSession, branch_id: uuid.UUID) -> TaxProfile | None:
+    """The branch's effective VAT profile (via its country); None if unconfigured."""
+    return (
+        await session.execute(
+            select(TaxProfile)
+            .join(Country, Country.tax_profile_id == TaxProfile.id)
+            .join(Branch, Branch.country_code == Country.code)
+            .where(
+                Branch.id == branch_id,
+                Branch.is_deleted.is_(False),
+                TaxProfile.is_deleted.is_(False),
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def get_tax_profile_by_id(session: AsyncSession, profile_id: uuid.UUID) -> TaxProfile:
+    profile = (
+        await session.execute(
+            select(TaxProfile).where(TaxProfile.id == profile_id, TaxProfile.is_deleted.is_(False))
+        )
+    ).scalar_one_or_none()
+    if profile is None:
+        raise ApiError(ErrorCode.VALIDATION_FAILED, 404, message="Tax profile not found.")
+    return profile
+
+
+async def update_tax_profile(
+    session: AsyncSession, *, actor: User, profile: TaxProfile, values: dict[str, Any]
+) -> TaxProfile:
+    """Update the editable VAT fields (name / vat_rate / medicine_vat_rate /
+    einvoice_system) and audit settings.changed. Country-level config — affects
+    every branch in that country (gated to super_admin at the router)."""
+    changed: list[str] = []
+    for field in _TAX_FIELDS:
+        if field in values and getattr(profile, field) != values[field]:
+            setattr(profile, field, values[field])
+            changed.append(field)
+    if not changed:
+        return profile
+    profile.updated_by = actor.id
+    await audit_service.record(
+        session,
+        AuditAction.SETTINGS_CHANGED,
+        actor=actor,
+        entity_type="tax_profile",
+        entity_id=profile.id,
+        metadata={"entity": "tax_profile", "fields": changed},
+    )
+    await session.commit()
+    await session.refresh(profile)
+    return profile

@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from pharmaos_api.db import get_session
 from pharmaos_api.deps import get_current_user, require_permission
 from pharmaos_api.errors import success_envelope
-from pharmaos_api.models import Branch, Settings, User
+from pharmaos_api.models import Branch, Settings, TaxProfile, User
 from pharmaos_api.security.csrf import enforce_csrf
 from pharmaos_api.services import config_service as svc
 
@@ -53,6 +53,18 @@ def _settings(s: Settings) -> dict[str, object]:
     }
 
 
+def _tax_profile(tp: TaxProfile) -> dict[str, object]:
+    return {
+        "id": str(tp.id),
+        "name": tp.name,
+        "vat_rate": str(tp.vat_rate),
+        "medicine_vat_rate": (
+            str(tp.medicine_vat_rate) if tp.medicine_vat_rate is not None else None
+        ),
+        "einvoice_system": tp.einvoice_system,
+    }
+
+
 class UpdateBranchIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
@@ -73,6 +85,13 @@ class SettingsIn(BaseModel):
     show_pharmacist_signature: bool = False
     show_qr_code: bool = False
     max_discount_percent: Decimal = Field(default=Decimal(0), ge=Decimal(0), le=Decimal(100))
+
+
+class TaxProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    vat_rate: Decimal = Field(ge=Decimal(0), le=Decimal(100))
+    medicine_vat_rate: Decimal | None = Field(default=None, ge=Decimal(0), le=Decimal(100))
+    einvoice_system: str | None = Field(default=None, pattern="^(eta_ereceipt|zatca)$")
 
 
 @router.get("/branches")
@@ -136,3 +155,30 @@ async def put_settings(
         session, actor=actor, branch_id=branch_id, values=body.model_dump()
     )
     return success_envelope(_settings(settings))
+
+
+@router.get("/branches/{branch_id}/tax-profile")
+async def get_tax_profile(
+    branch_id: uuid.UUID, session: AsyncSession = Depends(get_session), _: None = _view
+) -> dict[str, object]:
+    """The branch's effective VAT profile (via its country); null if unconfigured."""
+    await svc.get_branch(session, branch_id)
+    profile = await svc.get_tax_profile(session, branch_id)
+    return success_envelope(_tax_profile(profile) if profile is not None else None)
+
+
+@router.patch("/tax-profiles/{profile_id}")
+async def update_tax_profile(
+    profile_id: uuid.UUID,
+    body: TaxProfileIn,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    actor: User = Depends(get_current_user),
+    _: None = _edit,
+) -> dict[str, object]:
+    enforce_csrf(request)
+    profile = await svc.get_tax_profile_by_id(session, profile_id)
+    profile = await svc.update_tax_profile(
+        session, actor=actor, profile=profile, values=body.model_dump()
+    )
+    return success_envelope(_tax_profile(profile))

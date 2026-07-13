@@ -289,3 +289,85 @@ async def test_catalog_create_non_medicine_via_api(client, db_session: AsyncSess
         json={"trade_name": "Panadol Y"},
     )
     assert default.json()["data"]["is_medicine"] is True
+
+
+# ------------------------------ tax profile settings (API) ------------------------------
+
+
+async def _seed(db_session: AsyncSession, role_code: str) -> str:
+    from pharmaos_api.models import Role
+    from pharmaos_api.security.passwords import hash_password
+
+    role = (await db_session.execute(select(Role).where(Role.code == role_code))).scalar_one()
+    username = f"{role_code}_{uuid.uuid4().hex[:8]}"
+    db_session.add(
+        User(
+            username=username,
+            full_name=f"م {role_code}",
+            password_hash=hash_password("T3st@user!"),
+            role_id=role.id,
+        )
+    )
+    await db_session.commit()
+    return username
+
+
+async def _login(client, username: str) -> str:  # type: ignore[no-untyped-def]
+    r = await client.post(
+        "/api/v1/auth/login", json={"username": username, "password": "T3st@user!"}
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["data"]["csrf_token"]
+
+
+async def test_tax_profile_read_and_update_api(  # type: ignore[no-untyped-def]
+    client, db_session: AsyncSession, branch: Branch
+) -> None:
+    from pharmaos_api.models import TaxProfile
+
+    # super_admin reads the branch's effective (seeded EG) profile.
+    sa_csrf = await _login(client, await _seed(db_session, "super_admin"))
+    got = await client.get(f"/api/v1/branches/{branch.id}/tax-profile")
+    assert got.status_code == 200, got.text
+    data = got.json()["data"]
+    assert data["vat_rate"] == "14.00"
+    assert data["medicine_vat_rate"] is None
+    assert data["einvoice_system"] == "eta_ereceipt"
+
+    # Update a THROWAWAY profile (isolated from the shared EG profile the sale
+    # tests depend on) — proves the edit path + audit without cross-test drift.
+    throwaway = TaxProfile(name="Test VAT", vat_rate=Decimal("14.00"))
+    db_session.add(throwaway)
+    await db_session.commit()
+    patched = await client.patch(
+        f"/api/v1/tax-profiles/{throwaway.id}",
+        headers={"X-CSRF-Token": sa_csrf},
+        json={
+            "name": "Test VAT",
+            "vat_rate": "15.00",
+            "medicine_vat_rate": "5.00",
+            "einvoice_system": "eta_ereceipt",
+        },
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["data"]["vat_rate"] == "15.00"
+    assert patched.json()["data"]["medicine_vat_rate"] == "5.00"
+
+    # CSRF is mandatory on the mutation.
+    no_csrf = await client.patch(
+        f"/api/v1/tax-profiles/{throwaway.id}", json={"name": "x", "vat_rate": "10"}
+    )
+    assert no_csrf.status_code == 403 and no_csrf.json()["error"]["code"] == "E-AUTH-004"
+
+    # branch_manager may VIEW but not EDIT; cashier may not view at all.
+    bm_csrf = await _login(client, await _seed(db_session, "branch_manager"))
+    assert (await client.get(f"/api/v1/branches/{branch.id}/tax-profile")).status_code == 200
+    bm_edit = await client.patch(
+        f"/api/v1/tax-profiles/{throwaway.id}",
+        headers={"X-CSRF-Token": bm_csrf},
+        json={"name": "x", "vat_rate": "10"},
+    )
+    assert bm_edit.status_code == 403 and bm_edit.json()["error"]["code"] == "E-AUTH-002"
+
+    await _login(client, await _seed(db_session, "cashier"))
+    assert (await client.get(f"/api/v1/branches/{branch.id}/tax-profile")).status_code == 403

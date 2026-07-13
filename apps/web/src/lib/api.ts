@@ -161,6 +161,35 @@ export function updateBranch(branchId: string, values: Record<string, unknown>) 
   });
 }
 
+// ---- Tax profile (P2-M6) ----
+
+export interface TaxProfile {
+  id: string;
+  name: string;
+  vat_rate: string;
+  medicine_vat_rate: string | null;
+  einvoice_system: string | null;
+}
+
+export function getTaxProfile(branchId: string) {
+  return apiFetch<TaxProfile | null>(`/api/v1/branches/${branchId}/tax-profile`);
+}
+
+export function updateTaxProfile(
+  profileId: string,
+  values: {
+    name: string;
+    vat_rate: string;
+    medicine_vat_rate: string | null;
+    einvoice_system: string | null;
+  },
+) {
+  return apiFetch<TaxProfile>(`/api/v1/tax-profiles/${profileId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(values),
+  });
+}
+
 // ---- Catalog editor: packaging levels & barcodes (P1-M7 UI; API since M5) ----
 
 export interface Unit {
@@ -522,6 +551,7 @@ export interface PosSaleResult {
   invoice_number: string;
   currency_code: string;
   subtotal: string;
+  tax_amount: string;
   total: string;
   payment_method: string;
   tendered_amount: string | null;
@@ -735,6 +765,7 @@ export interface InvoiceReceipt {
   currency_symbol: string;
   subtotal: string;
   discount: string;
+  tax: string;
   total: string;
   tendered_amount: string | null;
   change_amount: string | null;
