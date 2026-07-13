@@ -211,6 +211,78 @@ async def test_dispense_links_serial_to_invoice(admin, branch, db_session: Async
     assert mine[0]["dispensed_invoice_id"] == invoice_id
 
 
+async def test_dispense_rejects_serial_from_wrong_batch(admin, branch, db_session: AsyncSession):  # type: ignore[no-untyped-def]
+    """Review C1: a scanned serial must come from a batch this sale actually
+    dispensed. FEFO picks the earlier-expiry batch; scanning a pack from the
+    other (later-expiry) batch is rejected with E-TT-003."""
+    client, csrf = admin
+    g = _gtin()
+    med, pkg = await _make_med(db_session, gtin=g)
+    near, far = uuid.uuid4().hex[:8], uuid.uuid4().hex[:8]
+    early = (dt.date.today() + dt.timedelta(days=60)).isoformat()
+    late = (dt.date.today() + dt.timedelta(days=400)).isoformat()
+
+    # Batch A (earlier expiry — FEFO picks this) with serial S_near.
+    a = await client.post(
+        "/api/v1/inventory/receive",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "branch_id": str(branch.id),
+            "medication_id": med,
+            "batch_number": f"A-{near}",
+            "expiry_date": early,
+            "quantity": "5",
+            "purchase_price": "2.00",
+            "gtin": g,
+            "serials": [f"NEAR-{near}"],
+        },
+    )
+    assert a.status_code == 200, a.text
+    # Batch B (later expiry) with serial S_far.
+    b = await client.post(
+        "/api/v1/inventory/receive",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "branch_id": str(branch.id),
+            "medication_id": med,
+            "batch_number": f"B-{far}",
+            "expiry_date": late,
+            "quantity": "5",
+            "purchase_price": "2.00",
+            "gtin": g,
+            "serials": [f"FAR-{far}"],
+        },
+    )
+    assert b.status_code == 200, b.text
+
+    # Sell 1 — FEFO dispenses batch A; scanning the batch-B pack must be rejected.
+    mismatch = await client.post(
+        "/api/v1/pos/sale",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "branch_id": str(branch.id),
+            "lines": [{"medication_id": med, "packaging_id": pkg, "quantity": "1"}],
+            "payment_method": "cash",
+            "serials": [f"FAR-{far}"],
+        },
+    )
+    assert mismatch.status_code == 422
+    assert mismatch.json()["error"]["code"] == "E-TT-003"
+
+    # Scanning the batch-A pack (the one FEFO dispensed) succeeds.
+    ok = await client.post(
+        "/api/v1/pos/sale",
+        headers={"X-CSRF-Token": csrf},
+        json={
+            "branch_id": str(branch.id),
+            "lines": [{"medication_id": med, "packaging_id": pkg, "quantity": "1"}],
+            "payment_method": "cash",
+            "serials": [f"NEAR-{near}"],
+        },
+    )
+    assert ok.status_code == 200, ok.text
+
+
 async def test_sale_rejects_unknown_serial(admin, branch, db_session: AsyncSession):  # type: ignore[no-untyped-def]
     client, csrf = admin
     med, pkg = await _make_med(db_session, gtin=_gtin())

@@ -354,6 +354,9 @@ export interface ReceiveInput {
   quantity: string;
   purchase_price: string;
   supplier_id?: string | null;
+  // P2-M3 (review C2): 2D pack-serial capture on receive (EDA track & trace).
+  gtin?: string | null;
+  serials?: string[];
 }
 
 export function listInventoryBranches() {
@@ -573,6 +576,8 @@ export function createPosSale(input: {
   tendered?: string;
   customer_id?: string;
   redeem_points?: number;
+  // P2-M3 (review C2): 2D pack serials scanned for tracked meds at dispense.
+  serials?: string[];
 }) {
   return apiFetch<PosSaleResult>('/api/v1/pos/sale', {
     method: 'POST',

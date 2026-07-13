@@ -534,13 +534,16 @@ async def create_sale(
 
     # P2-M3: link scanned 2D pack serials to this invoice (dispensed) — atomic
     # with the sale, so an unknown/already-dispensed serial rolls it ALL back.
+    # C1: each serial must belong to a batch this sale actually decremented.
     if serials:
+        dispensed_batch_ids = {item.batch_id for item in pending_items}
         await pack_serial_service.link_dispensed(
             session,
             actor=cashier,
             branch_id=branch_id,
             invoice_id=invoice.id,
             serials=serials,
+            dispensed_batch_ids=dispensed_batch_ids,
         )
 
     # P2-M5: attach the customer, redeem points (if any) as the discount, then

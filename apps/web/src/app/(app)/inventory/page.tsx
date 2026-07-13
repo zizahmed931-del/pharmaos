@@ -526,6 +526,9 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
   const [quantity, setQuantity] = useState('');
   const [price, setPrice] = useState('');
   const [supplierId, setSupplierId] = useState('');
+  // P2-M3 (C2): captured 2D pack serials + their GTIN (EDA track & trace).
+  const [serials, setSerials] = useState<string[]>([]);
+  const [gtin, setGtin] = useState<string | null>(null);
   const [newSupplier, setNewSupplier] = useState('');
   const [addingSupplier, setAddingSupplier] = useState(false);
 
@@ -541,6 +544,12 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
     onSuccess: (data) => {
       if (data.expiry_date) setExpiry(data.expiry_date);
       if (data.batch_number) setBatchNumber(data.batch_number);
+      if (data.gtin) setGtin(data.gtin);
+      // Each scanned 2D pack adds its serial (deduped) for track & trace.
+      if (data.serial_number) {
+        const s = data.serial_number;
+        setSerials((prev) => (prev.includes(s) ? prev : [...prev, s]));
+      }
       if (data.medication) {
         setMed({
           id: data.medication.id,
@@ -550,6 +559,7 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
       } else {
         toast.info(t('inventory.scan_unknown'));
       }
+      setScan(''); // ready for the next pack scan
     },
     onError: onErr,
   });
@@ -576,6 +586,8 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
         quantity,
         purchase_price: price,
         supplier_id: supplierId || null,
+        ...(gtin ? { gtin } : {}),
+        ...(serials.length > 0 ? { serials } : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['inventory', branchId] });
@@ -621,6 +633,31 @@ function ReceiveModal({ branchId, onClose }: { branchId: string; onClose: () => 
             }}
           />
           <p className="text-xs text-slate-500">{t('inventory.scan_hint')}</p>
+          {serials.length > 0 && (
+            <div className="space-y-1 pt-1">
+              <p className="text-xs font-medium text-slate-600">
+                {t('inventory.captured_serials')}: {serials.length}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {serials.map((s) => (
+                  <span
+                    key={s}
+                    className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 font-mono text-xs text-slate-700 ring-1 ring-border"
+                  >
+                    {s}
+                    <button
+                      type="button"
+                      className="text-slate-400 hover:text-danger"
+                      aria-label={t('inventory.remove_serial')}
+                      onClick={() => setSerials((prev) => prev.filter((x) => x !== s))}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Medication picker */}

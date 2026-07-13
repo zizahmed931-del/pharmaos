@@ -20,6 +20,7 @@ export const ERROR_CODES = {
   ERECEIPT_REJECTED: 'E-ETA-001',
   TT_REPORT_FAILED: 'E-TT-001',
   PACK_SERIAL_DUPLICATE: 'E-TT-002', // تسلسل عبوة مكرر (منتج غير ممتثل — قرار 804)
+  PACK_SERIAL_MISMATCH: 'E-TT-003', // تسلسل ممسوح ليس من دفعة مصروفة في هذا البيع
   SYNC_CONFLICT: 'E-SYN-001',
   PRINTER_NOT_CONFIGURED: 'E-PRN-001', // لا توجد طابعة مهيأة على الجهاز
   PRINTER_UNREACHABLE: 'E-PRN-002', // تعذر الوصول لطابعة الإيصالات

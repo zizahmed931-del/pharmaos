@@ -26,6 +26,7 @@ class ErrorCode:
     ERECEIPT_REJECTED = "E-ETA-001"
     TT_REPORT_FAILED = "E-TT-001"
     PACK_SERIAL_DUPLICATE = "E-TT-002"
+    PACK_SERIAL_MISMATCH = "E-TT-003"
     SYNC_CONFLICT = "E-SYN-001"
     PRINTER_NOT_CONFIGURED = "E-PRN-001"
     PRINTER_UNREACHABLE = "E-PRN-002"
@@ -53,6 +54,7 @@ _FALLBACK_MESSAGES: dict[str, str] = {
     ErrorCode.ERECEIPT_REJECTED: "E-receipt was rejected.",
     ErrorCode.TT_REPORT_FAILED: "Track & trace report failed.",
     ErrorCode.PACK_SERIAL_DUPLICATE: "Duplicate pack serial (GTIN + serial).",
+    ErrorCode.PACK_SERIAL_MISMATCH: "Scanned serial is not from a batch dispensed in this sale.",
     ErrorCode.SYNC_CONFLICT: "Synchronization conflict.",
     ErrorCode.PRINTER_NOT_CONFIGURED: "No receipt printer is configured on this device.",
     ErrorCode.PRINTER_UNREACHABLE: "Could not reach the receipt printer.",

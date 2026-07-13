@@ -85,11 +85,15 @@ async def link_dispensed(
     branch_id: uuid.UUID,
     invoice_id: uuid.UUID,
     serials: list[str],
+    dispensed_batch_ids: set[uuid.UUID],
 ) -> int:
     """Mark scanned serials dispensed and link them to the invoice (no commit).
 
-    Each serial must be in_stock in this branch — otherwise the sale is rejected
-    (422; the enclosing transaction rolls back so nothing persists)."""
+    Each serial must be in_stock in this branch AND belong to a batch actually
+    dispensed in this sale (review C1: closes the serial↔batch reconciliation
+    gap — a scanned pack whose batch the FEFO pick did not decrement means the
+    physical stock and the system's batch selection disagree, rejected with
+    E-TT-003). Any failure rolls the whole sale back (nothing persists)."""
     clean = _clean(serials)
     for serial in clean:
         pack = (
@@ -110,6 +114,12 @@ async def link_dispensed(
                 ErrorCode.VALIDATION_FAILED,
                 422,
                 message="Unknown or already-dispensed pack serial.",
+            )
+        if pack.batch_id not in dispensed_batch_ids:
+            raise ApiError(
+                ErrorCode.PACK_SERIAL_MISMATCH,
+                422,
+                message="Scanned serial is not from a batch dispensed in this sale.",
             )
         pack.status = "dispensed"
         pack.dispensed_invoice_id = invoice_id

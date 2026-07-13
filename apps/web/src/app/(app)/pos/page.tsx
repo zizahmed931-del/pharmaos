@@ -29,6 +29,7 @@ import {
   listInventoryBranches,
   listPrescriptions,
   type MedOption,
+  parseGs1,
   posScan,
   type PosLevel,
   type PosSaleResult,
@@ -108,6 +109,8 @@ export default function PosPage() {
   const [rxPickerFor, setRxPickerFor] = useState<number | null>(null);
   const [customer, setCustomer] = useState<CustomerSummary | null>(null);
   const [redeemPoints, setRedeemPoints] = useState(0);
+  const [posSerials, setPosSerials] = useState<string[]>([]);
+  const [serialScan, setSerialScan] = useState('');
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [printState, setPrintState] = useState<PrintState>('idle');
   const [receiptData, setReceiptData] = useState<InvoiceReceipt | null>(null);
@@ -296,6 +299,25 @@ export default function PosPage() {
     }
   };
 
+  // ---------------- 2D pack-serial capture (P2-M3 / C2) ----------------
+
+  const captureSerial = async () => {
+    const code = serialScan.trim();
+    if (!code) return;
+    try {
+      const parsed = await parseGs1(code);
+      const s = parsed.serial_number;
+      if (!s) {
+        toast.error(t('pos.unknown_code'));
+        return;
+      }
+      setPosSerials((prev) => (prev.includes(s) ? prev : [...prev, s]));
+      setSerialScan('');
+    } catch (e) {
+      toast.error(t(`errors.${errCode(e)}`));
+    }
+  };
+
   // ---------------- totals & checkout ----------------
 
   const totals = cart.map(lineTotal);
@@ -328,6 +350,8 @@ export default function PosPage() {
     setDone(null);
     setCustomer(null);
     setRedeemPoints(0);
+    setPosSerials([]);
+    setSerialScan('');
     setPrintState('idle');
     setReceiptData(null);
     setScanVal('');
@@ -723,6 +747,52 @@ export default function PosPage() {
         </div>
       )}
 
+      {/* 2D pack-serial capture (optional; EDA track & trace) */}
+      {cart.length > 0 && (
+        <div className="rounded-[var(--radius-lg)] border border-border bg-white p-3">
+          <Label className="text-xs text-slate-500">{t('pos.serials_label')}</Label>
+          <div className="mt-1 flex items-center gap-2">
+            <Input
+              className="h-9 font-mono"
+              value={serialScan}
+              placeholder={t('pos.serials_placeholder')}
+              onChange={(e) => setSerialScan(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void captureSerial();
+                }
+              }}
+            />
+          </div>
+          {posSerials.length > 0 && (
+            <div className="mt-2 space-y-1">
+              <p className="text-xs font-medium text-slate-600">
+                {t('pos.serials_captured')}: {posSerials.length}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {posSerials.map((s) => (
+                  <span
+                    key={s}
+                    className="inline-flex items-center gap-1 rounded-full bg-primary-50 px-2 py-0.5 font-mono text-xs text-primary-700"
+                  >
+                    {s}
+                    <button
+                      type="button"
+                      className="text-slate-400 hover:text-danger"
+                      onClick={() => setPosSerials((prev) => prev.filter((x) => x !== s))}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          <p className="mt-1 text-xs text-slate-400">{t('pos.serials_hint')}</p>
+        </div>
+      )}
+
       {/* Totals + pay */}
       <div className="flex items-center justify-between rounded-[var(--radius-lg)] border border-border bg-white p-4">
         <div className="text-sm text-slate-500">
@@ -762,6 +832,7 @@ export default function PosPage() {
           cart={cart}
           clientTotal={netTotal}
           redeemPoints={effectiveRedeem}
+          serials={posSerials}
           currency={currency}
           customerId={customer?.id ?? null}
           onClose={() => {
@@ -1086,6 +1157,7 @@ function PaymentModal({
   cart,
   clientTotal,
   redeemPoints,
+  serials,
   currency,
   customerId,
   onClose,
@@ -1095,6 +1167,7 @@ function PaymentModal({
   cart: CartLine[];
   clientTotal: number;
   redeemPoints: number;
+  serials: string[];
   currency: string;
   customerId: string | null;
   onClose: () => void;
@@ -1120,6 +1193,8 @@ function PaymentModal({
         ...(customerId ? { customer_id: customerId } : {}),
         // M5 (C3) — redeem loyalty points as a discount (needs a customer).
         ...(customerId && redeemPoints > 0 ? { redeem_points: redeemPoints } : {}),
+        // M3 (C2) — scanned 2D pack serials for track & trace.
+        ...(serials.length > 0 ? { serials } : {}),
       }),
     onSuccess: (result: PosSaleResult) => {
       // Server change_amount is authoritative (M10); fall back to local math.
