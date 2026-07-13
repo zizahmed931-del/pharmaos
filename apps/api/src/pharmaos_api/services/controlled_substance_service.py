@@ -13,7 +13,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.audit import AuditAction
-from pharmaos_api.models import ControlledSubstanceLog, Medication, User
+from pharmaos_api.models import (
+    ControlledSubstanceLog,
+    Invoice,
+    Medication,
+    MedicationBatch,
+    User,
+)
 from pharmaos_api.services import audit_service
 
 MAX_PAGE_SIZE = 100
@@ -73,7 +79,11 @@ async def list_log(
     skip: int = 0,
     limit: int = 50,
 ) -> tuple[list[dict[str, object]], int]:
-    """Read model for the register view (controlled_substances.view)."""
+    """Read model for the register view (controlled_substances.view). Joins in
+    the human-facing references (batch number, invoice number, dispensing
+    user's name) — a compliance register showing raw UUIDs would be useless to
+    the pharmacist reviewing it. Every joined FK is NOT NULL and never
+    hard-deleted, so a plain INNER JOIN is safe."""
     capped = min(max(limit, 1), MAX_PAGE_SIZE)
     conditions = [ControlledSubstanceLog.branch_id == branch_id]
     if medication_id is not None:
@@ -83,8 +93,11 @@ async def list_log(
     ).scalar_one()
     rows = (
         await session.execute(
-            select(ControlledSubstanceLog, Medication)
+            select(ControlledSubstanceLog, Medication, User, Invoice, MedicationBatch)
             .join(Medication, Medication.id == ControlledSubstanceLog.medication_id)
+            .join(User, User.id == ControlledSubstanceLog.dispensed_by)
+            .join(Invoice, Invoice.id == ControlledSubstanceLog.invoice_id)
+            .join(MedicationBatch, MedicationBatch.id == ControlledSubstanceLog.batch_id)
             .where(*conditions)
             .order_by(ControlledSubstanceLog.created_at.desc())
             .offset(max(skip, 0))
@@ -98,11 +111,14 @@ async def list_log(
             "trade_name": medication.trade_name,
             "trade_name_ar": medication.trade_name_ar,
             "batch_id": str(log.batch_id),
+            "batch_number": batch.batch_number,
             "invoice_id": str(log.invoice_id),
+            "invoice_number": invoice.invoice_number,
             "prescription_id": str(log.prescription_id) if log.prescription_id else None,
             "quantity_dispensed": str(log.quantity_dispensed),
             "dispensed_by": str(log.dispensed_by),
+            "dispensed_by_name": user.full_name,
             "created_at": log.created_at.isoformat(),
         }
-        for log, medication in rows
+        for log, medication, user, invoice, batch in rows
     ], int(total)

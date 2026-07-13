@@ -23,9 +23,11 @@ import {
   getCurrentCashSession,
   getInvoiceReceipt,
   getMedication,
+  getPrescription,
   type InvoiceReceipt,
   listCustomers,
   listInventoryBranches,
+  listPrescriptions,
   type MedOption,
   posScan,
   type PosLevel,
@@ -50,7 +52,20 @@ interface CartLine {
   qty: string;
   requiresPrescription: boolean;
   controlled: boolean;
+  /** P2-M8 — set once the cashier links a prescription item; required before
+   * checkout when requiresPrescription is true. remainingHint is a display-only
+   * snapshot captured at pick time (the server remains authoritative). */
+  prescriptionItemId: string | null;
+  prescriptionRemainingHint: string | null;
 }
+
+const RX_STATUS_TONE: Record<string, 'neutral' | 'warning' | 'success' | 'danger'> = {
+  pending: 'neutral',
+  partially_fulfilled: 'warning',
+  fulfilled: 'success',
+  expired: 'danger',
+  cancelled: 'danger',
+};
 
 interface DoneInfo {
   invoiceId: string;
@@ -88,6 +103,7 @@ export default function PosPage() {
   const [resultIdx, setResultIdx] = useState(0);
   const [searching, setSearching] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [rxPickerFor, setRxPickerFor] = useState<number | null>(null);
   const [customer, setCustomer] = useState<CustomerSummary | null>(null);
   const [done, setDone] = useState<DoneInfo | null>(null);
   const [printState, setPrintState] = useState<PrintState>('idle');
@@ -149,6 +165,8 @@ export default function PosPage() {
         unitPrice: scan.selling_price,
         requiresPrescription: scan.requires_prescription,
         controlled: scan.controlled_substance,
+        prescriptionItemId: null,
+        prescriptionRemainingHint: null,
       },
       1,
     );
@@ -265,6 +283,8 @@ export default function PosPage() {
           unitPrice: def.selling_price,
           requiresPrescription: detail.requires_prescription,
           controlled: detail.controlled_substance,
+          prescriptionItemId: null,
+          prescriptionRemainingHint: null,
         },
         1,
       );
@@ -277,12 +297,17 @@ export default function PosPage() {
 
   const totals = cart.map(lineTotal);
   const hasInvalidQty = totals.some((x) => !Number.isFinite(x));
+  const hasUnlinkedRx = cart.some((l) => l.requiresPrescription && !l.prescriptionItemId);
   const clientTotal = totals.reduce((a, x) => a + (Number.isFinite(x) ? x : 0), 0);
 
   const openPay = () => {
     if (cart.length === 0) return;
     if (hasInvalidQty) {
       toast.error(t('pos.invalid_qty'));
+      return;
+    }
+    if (hasUnlinkedRx) {
+      toast.error(t('pos.rx_missing_hint'));
       return;
     }
     setPayOpen(true);
@@ -372,7 +397,7 @@ export default function PosPage() {
         }
         return;
       }
-      if (payOpen) return;
+      if (payOpen || rxPickerFor !== null) return;
 
       if (e.key === 'F2') {
         e.preventDefault();
@@ -569,11 +594,35 @@ export default function PosPage() {
                             {t('catalog.controlled')}
                           </Badge>
                         )}
-                        {l.requiresPrescription && (
-                          <Badge tone="warning" className="ms-2">
-                            {t('catalog.requires_prescription')}
-                          </Badge>
-                        )}
+                        {l.requiresPrescription &&
+                          (l.prescriptionItemId ? (
+                            <button
+                              type="button"
+                              title={
+                                l.prescriptionRemainingHint
+                                  ? `${t('prescriptions.remaining')}: ${l.prescriptionRemainingHint}`
+                                  : undefined
+                              }
+                              className="ms-2 inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-success hover:bg-green-200"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRxPickerFor(i);
+                              }}
+                            >
+                              ✓ {t('pos.rx_linked')}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="ms-2 inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-warning hover:bg-amber-200"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setRxPickerFor(i);
+                              }}
+                            >
+                              {t('pos.rx_choose')}
+                            </button>
+                          ))}
                       </td>
                       <td className="p-2">
                         <Select
@@ -643,12 +692,19 @@ export default function PosPage() {
             </div>
             <div className="text-xs text-slate-400">{t('pos.vat_inclusive')}</div>
           </div>
-          <Button size="lg" disabled={cart.length === 0 || hasInvalidQty} onClick={openPay}>
+          <Button
+            size="lg"
+            disabled={cart.length === 0 || hasInvalidQty || hasUnlinkedRx}
+            onClick={openPay}
+          >
             {t('pos.pay')}
           </Button>
         </div>
       </div>
 
+      {hasUnlinkedRx && (
+        <p className="text-center text-xs text-danger">{t('pos.rx_missing_hint')}</p>
+      )}
       <p className="text-center text-xs text-slate-400">{t('pos.shortcuts')}</p>
 
       {payOpen && (
@@ -667,6 +723,30 @@ export default function PosPage() {
             setDone(info);
             qc.invalidateQueries({ queryKey: ['cash-current', branchId] }); // drawer summary moved
             void startPrintFlow(info);
+          }}
+        />
+      )}
+
+      {rxPickerFor !== null && cart[rxPickerFor] && (
+        <PrescriptionPickerModal
+          branchId={branchId}
+          medicationId={cart[rxPickerFor].medicationId}
+          medName={cart[rxPickerFor].name}
+          customerId={customer?.id ?? null}
+          onPick={(itemId, remainingHint) => {
+            setCart((prev) =>
+              prev.map((l, idx) =>
+                idx === rxPickerFor
+                  ? { ...l, prescriptionItemId: itemId, prescriptionRemainingHint: remainingHint }
+                  : l,
+              ),
+            );
+            setRxPickerFor(null);
+            focusScan();
+          }}
+          onClose={() => {
+            setRxPickerFor(null);
+            focusScan();
           }}
         />
       )}
@@ -973,6 +1053,7 @@ function PaymentModal({
           medication_id: l.medicationId,
           packaging_id: l.packagingId,
           quantity: String(Number(l.qty)),
+          ...(l.prescriptionItemId ? { prescription_item_id: l.prescriptionItemId } : {}),
         })),
         payment_method: method,
         // M10 — persist the customer cash math on the invoice (cash only).
@@ -1070,6 +1151,142 @@ function PaymentModal({
           </Button>
         </div>
       </form>
+    </Modal>
+  );
+}
+
+// ------------------------------ prescription picker (P2-M8) ------------------------------
+
+/**
+ * Two-step picker: (1) an open prescription for this branch/customer, then
+ * (2) the ONE item within it that matches the scanned medication and still
+ * has remaining quantity. Only pending/partially_fulfilled prescriptions are
+ * listed — cancelled/expired/fulfilled ones can never receive a new dispense
+ * (sales_service enforces this server-side regardless; this is a UX filter).
+ */
+function PrescriptionPickerModal({
+  branchId,
+  medicationId,
+  medName,
+  customerId,
+  onPick,
+  onClose,
+}: {
+  branchId: string;
+  medicationId: string;
+  medName: string;
+  customerId: string | null;
+  onPick: (itemId: string, remainingHint: string) => void;
+  onClose: () => void;
+}) {
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const listQuery = useQuery({
+    queryKey: ['pos-rx-open', branchId, customerId],
+    queryFn: () => listPrescriptions(branchId, customerId ? { customerId } : {}),
+    enabled: !!branchId,
+  });
+  const openPrescriptions = (listQuery.data ?? []).filter(
+    (p) => p.status === 'pending' || p.status === 'partially_fulfilled',
+  );
+
+  const detailQuery = useQuery({
+    queryKey: ['prescription', openId],
+    queryFn: () => getPrescription(openId as string),
+    enabled: !!openId,
+  });
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t('pos.rx_picker_title')}
+      className="max-h-[80vh] max-w-lg overflow-y-auto"
+    >
+      <p className="mb-3 text-sm text-slate-600">
+        {t('pos.rx_for_item')}: <span className="font-semibold text-slate-800">{medName}</span>
+      </p>
+
+      {!openId ? (
+        listQuery.isLoading ? (
+          <div className="flex justify-center py-8">
+            <Spinner />
+          </div>
+        ) : openPrescriptions.length === 0 ? (
+          <p className="py-6 text-center text-sm text-slate-500">{t('pos.rx_none_open')}</p>
+        ) : (
+          <div className="space-y-1">
+            {openPrescriptions.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                className="flex w-full items-center justify-between rounded-[var(--radius-md)] border border-border px-3 py-2 text-start text-sm hover:bg-primary-50"
+                onClick={() => setOpenId(p.id)}
+              >
+                <span className="font-medium text-slate-800">{p.doctor_name}</span>
+                <span className="flex items-center gap-2 text-xs text-slate-500">
+                  {p.prescription_date}
+                  <Badge tone={RX_STATUS_TONE[p.status] ?? 'neutral'}>
+                    {t(`prescriptions.status_${p.status}`)}
+                  </Badge>
+                </span>
+              </button>
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="space-y-3">
+          <Button size="sm" variant="ghost" onClick={() => setOpenId(null)}>
+            ← {t('pos.rx_back')}
+          </Button>
+          {detailQuery.isLoading || !detailQuery.data ? (
+            <div className="flex justify-center py-8">
+              <Spinner />
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {detailQuery.data.items.map((item) => {
+                const matches = item.medication_id === medicationId;
+                const remaining = Number(item.remaining_qty_smallest);
+                const selectable = matches && remaining > 0;
+                return (
+                  <div
+                    key={item.id}
+                    className={`flex items-center justify-between rounded-[var(--radius-md)] border px-3 py-2 text-sm ${
+                      selectable
+                        ? 'border-primary-200 bg-primary-50/40'
+                        : 'border-border opacity-60'
+                    }`}
+                  >
+                    <div>
+                      <div className="font-medium text-slate-800">
+                        {item.trade_name_ar ?? item.trade_name}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {t('prescriptions.prescribed')}: {item.prescribed_qty}{' '}
+                        {item.packaging_name_ar} · {t('prescriptions.remaining')}:{' '}
+                        {item.remaining_qty_smallest}
+                      </div>
+                    </div>
+                    {selectable ? (
+                      <Button
+                        size="sm"
+                        onClick={() => onPick(item.id, item.remaining_qty_smallest)}
+                      >
+                        {t('pos.rx_select')}
+                      </Button>
+                    ) : (
+                      <span className="text-xs text-slate-400">
+                        {matches ? t('pos.rx_fulfilled') : t('pos.rx_no_match')}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }

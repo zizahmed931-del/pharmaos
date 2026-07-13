@@ -515,6 +515,11 @@ async def test_controlled_substance_log_api_view_only(
     assert ok.status_code == 200, ok.text
     rows = ok.json()["data"]
     assert len(rows) == 1 and rows[0]["quantity_dispensed"] == "1.000"
+    # Human-facing references (a compliance register of raw UUIDs is useless
+    # to the pharmacist reviewing it) — joined in from Invoice/User/Batch.
+    assert rows[0]["invoice_number"] and rows[0]["invoice_number"] != rows[0]["invoice_id"]
+    assert rows[0]["batch_number"]
+    assert rows[0]["dispensed_by_name"] == actor.full_name
 
     # No route exposes create/update/delete for the register — it is
     # exclusively a side effect of the sale flow (verified structurally: only

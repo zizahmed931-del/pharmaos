@@ -536,6 +536,8 @@ export interface PosSaleLine {
   medication_id: string;
   packaging_id: string;
   quantity: string;
+  /** P2-M8 — required when the scanned item is requires_prescription=true. */
+  prescription_item_id?: string;
 }
 
 export interface PosSaleItem {
@@ -1026,4 +1028,120 @@ export function listReturns(branchId: string) {
 
 export function getReturn(id: string) {
   return apiFetch<ReturnDetail>(`/api/v1/returns/${id}`);
+}
+
+// ---- Prescriptions + controlled-substance register (P2-M8) ----
+
+export type PrescriptionStatus =
+  | 'pending'
+  | 'partially_fulfilled'
+  | 'fulfilled'
+  | 'expired'
+  | 'cancelled';
+
+export interface PrescriptionSummary {
+  id: string;
+  customer_id: string | null;
+  doctor_name: string;
+  prescription_date: string;
+  status: PrescriptionStatus;
+  created_at: string;
+}
+
+export interface PrescriptionItemOut {
+  id: string;
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  packaging_id: string;
+  packaging_name_ar: string;
+  prescribed_qty: string;
+  prescribed_qty_smallest: string;
+  dispensed_qty_smallest: string;
+  remaining_qty_smallest: string;
+}
+
+export interface PrescriptionDetail {
+  id: string;
+  branch_id: string;
+  customer_id: string | null;
+  doctor_name: string;
+  doctor_license_no: string | null;
+  prescription_date: string;
+  notes: string | null;
+  status: PrescriptionStatus;
+  created_at: string;
+  items: PrescriptionItemOut[];
+}
+
+export interface NewPrescriptionItemInput {
+  medication_id: string;
+  packaging_id: string;
+  quantity: string;
+}
+
+export function listPrescriptions(
+  branchId: string,
+  opts: { customerId?: string; status?: PrescriptionStatus } = {},
+) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.customerId) params.set('customer_id', opts.customerId);
+  if (opts.status) params.set('status', opts.status);
+  return apiFetch<PrescriptionSummary[]>(`/api/v1/prescriptions?${params.toString()}`);
+}
+
+export function getPrescription(id: string) {
+  return apiFetch<PrescriptionDetail>(`/api/v1/prescriptions/${id}`);
+}
+
+export function createPrescription(input: {
+  branch_id: string;
+  customer_id?: string | null;
+  doctor_name: string;
+  doctor_license_no?: string | null;
+  prescription_date: string;
+  notes?: string | null;
+  items: NewPrescriptionItemInput[];
+}) {
+  return apiFetch<PrescriptionDetail>('/api/v1/prescriptions', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function updatePrescription(
+  id: string,
+  patch: {
+    doctor_name?: string;
+    doctor_license_no?: string | null;
+    notes?: string | null;
+    status?: PrescriptionStatus;
+  },
+) {
+  return apiFetch<PrescriptionDetail>(`/api/v1/prescriptions/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+export interface ControlledLogRow {
+  id: string;
+  medication_id: string;
+  trade_name: string;
+  trade_name_ar: string | null;
+  batch_id: string;
+  batch_number: string;
+  invoice_id: string;
+  invoice_number: string;
+  prescription_id: string | null;
+  quantity_dispensed: string;
+  dispensed_by: string;
+  dispensed_by_name: string;
+  created_at: string;
+}
+
+export function listControlledSubstanceLog(branchId: string, opts: { medicationId?: string } = {}) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.medicationId) params.set('medication_id', opts.medicationId);
+  return apiFetch<ControlledLogRow[]>(`/api/v1/controlled-substances/log?${params.toString()}`);
 }

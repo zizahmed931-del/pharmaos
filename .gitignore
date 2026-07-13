@@ -8,6 +8,8 @@ build/
 .next/
 out/
 .turbo/
+next-env.d.ts
+*.tsbuildinfo
 
 # Python
 __pycache__/
