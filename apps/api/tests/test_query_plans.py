@@ -107,3 +107,16 @@ async def test_controlled_substance_log_medication_scan_is_index_backed(
         "ORDER BY created_at DESC",
     )
     assert "idx_controlled_log_medication" in plan, plan
+
+
+async def test_expenses_branch_date_scan_is_index_backed(db_session: AsyncSession) -> None:
+    """P2-M9 — a branch's expense list/report over a date range must hit
+    idx_expenses_branch_date (branch_id, expense_date DESC)."""
+    plan = await _plan(
+        db_session,
+        "EXPLAIN SELECT id FROM expenses "
+        "WHERE branch_id = '00000000-0000-0000-0000-000000000001' "
+        "AND expense_date >= CURRENT_DATE - 30 AND NOT is_deleted "
+        "ORDER BY expense_date DESC",
+    )
+    assert "idx_expenses_branch_date" in plan, plan
