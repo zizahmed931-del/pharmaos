@@ -8,7 +8,7 @@ transaction). See services/compliance/ for the port/adapter + local simulator.
 import datetime as dt
 import uuid
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,3 +39,32 @@ class EReceiptQueue(MandatoryColumnsMixin, Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     submitted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     accepted_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class TtEvent(MandatoryColumnsMixin, Base):
+    """EDA track & trace outbox: receive/dispense/destroy/import events reported
+    to the national system via the EDA adapter."""
+
+    __tablename__ = "tt_events"
+
+    branch_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("branches.id"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    pack_serial_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("pack_serials.id"), nullable=True
+    )
+    gtin: Mapped[str] = mapped_column(String(14), nullable=False)
+    serial_number: Mapped[str] = mapped_column(String(64), nullable=False)
+    batch_number: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    expiry_date: Mapped[dt.date | None] = mapped_column(Date, nullable=True)
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'pending'")
+    )
+    report_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reported_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payload: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)

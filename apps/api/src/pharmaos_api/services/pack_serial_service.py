@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pharmaos_api.errors import ApiError, ErrorCode
 from pharmaos_api.models import MedicationBatch, PackSerial, User
+from pharmaos_api.services.compliance import tt_service
 
 MAX_PAGE_SIZE = 100
 
@@ -55,19 +56,20 @@ async def capture_received(
         raise ApiError(
             ErrorCode.VALIDATION_FAILED, 422, message="GTIN is required to capture pack serials."
         )
+    packs: list[PackSerial] = []
     for serial in clean:
-        session.add(
-            PackSerial(
-                branch_id=batch.branch_id,
-                batch_id=batch.id,
-                serial_number=serial,
-                gtin=code,
-                status="in_stock",
-                tt_report_status="pending",
-                created_by=actor.id,
-                updated_by=actor.id,
-            )
+        pack = PackSerial(
+            branch_id=batch.branch_id,
+            batch_id=batch.id,
+            serial_number=serial,
+            gtin=code,
+            status="in_stock",
+            tt_report_status="pending",
+            created_by=actor.id,
+            updated_by=actor.id,
         )
+        session.add(pack)
+        packs.append(pack)
     try:
         await session.flush()
     except IntegrityError as exc:
@@ -75,6 +77,9 @@ async def capture_received(
         raise ApiError(
             ErrorCode.PACK_SERIAL_DUPLICATE, 409, message="Duplicate pack serial (GTIN + serial)."
         ) from exc
+    # P2-M11: enqueue a 'receive' track & trace event per captured pack (outbox,
+    # atomic with the receive — never blocks on the national system).
+    tt_service.enqueue_receive(session, actor=actor, packs=packs)
     return len(clean)
 
 
@@ -95,6 +100,7 @@ async def link_dispensed(
     physical stock and the system's batch selection disagree, rejected with
     E-TT-003). Any failure rolls the whole sale back (nothing persists)."""
     clean = _clean(serials)
+    dispensed: list[PackSerial] = []
     for serial in clean:
         pack = (
             await session.execute(
@@ -124,6 +130,10 @@ async def link_dispensed(
         pack.status = "dispensed"
         pack.dispensed_invoice_id = invoice_id
         pack.updated_by = actor.id
+        dispensed.append(pack)
+    # P2-M11: enqueue a 'dispense' track & trace event per pack (outbox, atomic
+    # with the sale).
+    tt_service.enqueue_dispense(session, actor=actor, packs=dispensed, invoice_id=invoice_id)
     return len(clean)
 
 

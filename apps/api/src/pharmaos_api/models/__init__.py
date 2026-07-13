@@ -9,7 +9,7 @@ from pharmaos_api.models.catalog import (
     MedicationPackaging,
     MedicationPriceHistory,
 )
-from pharmaos_api.models.compliance import EReceiptQueue
+from pharmaos_api.models.compliance import EReceiptQueue, TtEvent
 from pharmaos_api.models.customer import Customer, LoyaltyTransaction
 from pharmaos_api.models.finance import Expense, ExpenseCategory
 from pharmaos_api.models.operations import (
@@ -66,5 +66,6 @@ __all__ = [
     "StockMovement",
     "Supplier",
     "TaxProfile",
+    "TtEvent",
     "User",
 ]
