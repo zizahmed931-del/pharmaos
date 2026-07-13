@@ -1256,3 +1256,56 @@ export function updateExpense(
 export function deleteExpense(id: string) {
   return apiFetch<{ deleted: boolean }>(`/api/v1/finance/expenses/${id}`, { method: 'DELETE' });
 }
+
+// ---- Compliance: ETA e-receipts + EDA track & trace (P2-M10 / P2-M11) ----
+
+export interface EReceiptRow {
+  id: string;
+  invoice_id: string;
+  status: string;
+  eta_uuid: string | null;
+  qr_data: string | null;
+  submission_attempts: number;
+  last_error: string | null;
+  submitted_at: string | null;
+  created_at: string;
+}
+
+export interface TtEventRow {
+  id: string;
+  event_type: string;
+  gtin: string;
+  serial_number: string;
+  invoice_id: string | null;
+  status: string;
+  report_attempts: number;
+  last_error: string | null;
+  reported_at: string | null;
+  created_at: string;
+}
+
+export function listEreceipts(branchId: string, opts: { status?: string } = {}) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.status) params.set('status', opts.status);
+  return apiFetch<EReceiptRow[]>(`/api/v1/compliance/ereceipts?${params.toString()}`);
+}
+
+export function drainEreceipts(branchId: string) {
+  return apiFetch<{ processed: number; accepted: number; failed: number }>(
+    '/api/v1/compliance/ereceipts/drain',
+    { method: 'POST', body: JSON.stringify({ branch_id: branchId }) },
+  );
+}
+
+export function listTtEvents(branchId: string, opts: { status?: string } = {}) {
+  const params = new URLSearchParams({ branch_id: branchId, limit: '100' });
+  if (opts.status) params.set('status', opts.status);
+  return apiFetch<TtEventRow[]>(`/api/v1/compliance/tt-events?${params.toString()}`);
+}
+
+export function drainTtEvents(branchId: string) {
+  return apiFetch<{ processed: number; reported: number; failed: number }>(
+    '/api/v1/compliance/tt-events/drain',
+    { method: 'POST', body: JSON.stringify({ branch_id: branchId }) },
+  );
+}

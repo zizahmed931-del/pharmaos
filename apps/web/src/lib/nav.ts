@@ -31,6 +31,12 @@ export const NAV_ITEMS: readonly NavItem[] = [
     ready: true,
   },
   { href: '/finance', labelKey: 'nav.finance', permission: 'finance.expenses', ready: true },
+  {
+    href: '/compliance',
+    labelKey: 'nav.compliance',
+    permission: 'compliance.ereceipt',
+    ready: true,
+  },
   { href: '/cashier', labelKey: 'nav.cashier', permission: 'cashier.open_session', ready: true },
   { href: '/reports', labelKey: 'nav.reports', permission: 'reports.sales', ready: false },
   { href: '/users', labelKey: 'nav.users', permission: 'settings.users', ready: true },

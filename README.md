@@ -86,6 +86,17 @@ derived cache + drift self-heal + expiry sweep), full POS (unit switching,
 mouse-free flow), ESC/POS receipt printing + cash drawer, and cash sessions with
 the end-of-day Z-report.
 
+**Phase 2 (Business + Egyptian compliance) code-complete** — M1..M12: full
+supplier management and purchase orders; 2D pack serials (captured on receive,
+batch-matched at dispense); deep batch tracking (expiry alerts, auto-quarantine,
+reports); customers and loyalty (earn and redeem); VAT per tax profile; returns
+as credit notes (quarantine-by-default returned stock) with a payments ledger;
+prescriptions and an append-only controlled-substance register; expenses
+(reconciled with the cashier Z-report); and the ETA e-receipt and EDA
+track-and-trace outbox modules (Port/Adapter with a local simulator; real
+acceptance **pending credentials**). See **`docs/phase2-acceptance.md`** for the
+acceptance-criteria harvest.
+
 Remaining before pilot sign-off: the on-device hardware pass —
 follow **`docs/pilot-checklist.md`** on the pharmacy machine.
 See `docs/versions.md` for the pinned version matrix and upgrade log.
