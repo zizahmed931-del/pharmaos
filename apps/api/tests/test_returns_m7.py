@@ -21,14 +21,46 @@ from pharmaos_api.models import (
     InvoiceItem,
     Medication,
     MedicationBarcode,
+    MedicationBatch,
     MedicationPackaging,
     Payment,
     Role,
+    Settings,
     User,
 )
 from pharmaos_api.security.passwords import hash_password
-from pharmaos_api.services import inventory_service, return_service, sales_service
+from pharmaos_api.services import (
+    customer_service,
+    inventory_service,
+    return_service,
+    sales_service,
+)
 from pharmaos_api.services.sales_service import SaleLine
+
+
+async def _return_batches(
+    db_session: AsyncSession, branch: Branch, med_id: str
+) -> list[MedicationBatch]:
+    """Batches created to hold returned stock (return_in movement), newest first."""
+    return list(
+        (
+            await db_session.execute(
+                select(MedicationBatch)
+                .join(
+                    return_service.StockMovement,
+                    return_service.StockMovement.batch_id == MedicationBatch.id,
+                )
+                .where(
+                    MedicationBatch.branch_id == branch.id,
+                    MedicationBatch.medication_id == uuid.UUID(med_id),
+                    return_service.StockMovement.movement_type == "return_in",
+                )
+                .order_by(MedicationBatch.received_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 @pytest.fixture
@@ -143,10 +175,15 @@ async def test_full_return_roundtrip(db_session: AsyncSession, actor: User, bran
     assert credit.total == Decimal("100.00")  # 2 x 50, medicine exempt -> tax 0
     assert credit.tax_amount == Decimal("0.00")
 
-    # Stock returned to the SAME batch: 100 - 3 (sold) + 2 (returned) = 99.
+    # Returned stock lands in a DISTINCT quarantined batch (plan D3 default) — the
+    # ORIGINAL batch is untouched (97 = 100 - 3 sold) and the returned 2 are NOT
+    # yet sellable, so the derived cache stays at 97 until a pharmacist releases.
     await db_session.refresh(batch)
-    assert batch.quantity == Decimal("99")
-    assert await _cached(db_session, branch, med_id) == Decimal("99")
+    assert batch.quantity == Decimal("97") and batch.status == "active"
+    assert await _cached(db_session, branch, med_id) == Decimal("97")
+    ret_batches = await _return_batches(db_session, branch, med_id)
+    assert len(ret_batches) == 1
+    assert ret_batches[0].quantity == Decimal("2") and ret_batches[0].status == "quarantined"
 
     # A negative payment (refund) is booked against the return.
     refund = (
@@ -300,9 +337,11 @@ async def test_taxable_return_credits_vat(
     assert credit.subtotal == Decimal("100.00")
 
 
-async def test_depleted_batch_reactivates_on_return(
+async def test_returned_stock_quarantined_by_default(
     db_session: AsyncSession, actor: User, branch: Branch
 ) -> None:
+    """Plan D3 / review C6: returned stock is quarantined (not resold) by default,
+    and only becomes sellable once a pharmacist releases the return batch."""
     med_id, bc = await _make_med(db_session, is_medicine=True, price="20.00")
     batch = await _receive(db_session, actor, branch, med_id, qty="2")
     invoice = await _sell(db_session, actor, branch, bc, "2")  # depletes the batch
@@ -317,9 +356,76 @@ async def test_depleted_batch_reactivates_on_return(
         original_invoice_id=invoice.id,
         lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
     )
+    # The original batch stays depleted; the returned unit sits in a NEW
+    # quarantined batch and is NOT counted as sellable stock yet.
     await db_session.refresh(batch)
-    assert batch.status == "active" and batch.quantity == Decimal("1")
+    assert batch.status == "depleted" and batch.quantity == Decimal("0")
+    assert await _cached(db_session, branch, med_id) == Decimal("0")
+    ret_batches = await _return_batches(db_session, branch, med_id)
+    assert len(ret_batches) == 1 and ret_batches[0].status == "quarantined"
+    assert ret_batches[0].quantity == Decimal("1")
+
+    # A pharmacist releasing the return batch makes it sellable (cache catches up).
+    await inventory_service.set_batch_status(
+        db_session, actor=actor, batch=ret_batches[0], status="active", reason="inspected"
+    )
     assert await _cached(db_session, branch, med_id) == Decimal("1")
+
+
+async def test_returned_stock_active_when_branch_opts_in(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """A branch may opt in to returning stock straight to sellable (D3 setting)."""
+    db_session.add(
+        Settings(branch_id=branch.id, pharmacy_name="صيدلية", returned_stock_to_active=True)
+    )
+    await db_session.commit()
+    med_id, bc = await _make_med(db_session, is_medicine=True, price="20.00")
+    await _receive(db_session, actor, branch, med_id, qty="5")
+    invoice = await _sell(db_session, actor, branch, bc, "3")
+    assert await _cached(db_session, branch, med_id) == Decimal("2")
+
+    item = await _first_item(db_session, invoice.id)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+    )
+    ret_batches = await _return_batches(db_session, branch, med_id)
+    assert len(ret_batches) == 1 and ret_batches[0].status == "active"
+    # Immediately sellable: 5 - 3 sold + 1 returned-to-active = 3.
+    assert await _cached(db_session, branch, med_id) == Decimal("3")
+
+
+async def test_loyalty_points_reversed_on_return(
+    db_session: AsyncSession, actor: User, branch: Branch
+) -> None:
+    """Points earned on a sale are reversed (clamped) when it is returned (C4)."""
+    med_id, bc = await _make_med(db_session, is_medicine=True, price="50.00")
+    await _receive(db_session, actor, branch, med_id, qty="10")
+    customer = await customer_service.create_customer(db_session, actor=actor, name="عميل ولاء")
+
+    invoice = await sales_service.create_sale(
+        db_session,
+        branch_id=branch.id,
+        lines=[SaleLine(quantity=Decimal(2), barcode=bc)],
+        cashier=actor,
+        customer_id=customer.id,
+    )
+    await db_session.refresh(customer)
+    assert customer.loyalty_points == 100  # 2 x 50, 1 pt / EGP
+
+    item = await _first_item(db_session, invoice.id)
+    await return_service.create_return(
+        db_session,
+        actor=actor,
+        original_invoice_id=invoice.id,
+        lines=[return_service.ReturnLine(invoice_item_id=item.id, quantity=Decimal(1))],
+    )
+    # Returned 1 of 2 (50 EGP) → 50 points reversed, balance 100 - 50 = 50.
+    await db_session.refresh(customer)
+    assert customer.loyalty_points == 50
 
 
 # ------------------------------ API permissions ------------------------------

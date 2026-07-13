@@ -36,3 +36,8 @@ class Settings(MandatoryColumnsMixin, Base):
     max_discount_percent: Mapped[Decimal] = mapped_column(
         Numeric(5, 2), nullable=False, server_default=text("0")
     )
+    # P2 review C6 / plan D3: returned stock is quarantined by default (safe);
+    # a branch may opt in to sending returned stock straight back to sellable.
+    returned_stock_to_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("FALSE")
+    )

@@ -273,6 +273,44 @@ async def accrue_for_sale(
     return points
 
 
+async def reverse_for_return(
+    session: AsyncSession,
+    *,
+    actor: User,
+    customer_id: uuid.UUID,
+    refunded_total: Decimal,
+    return_id: uuid.UUID,
+) -> int:
+    """Reverse loyalty points earned on a sale when part/all of it is returned —
+    NO commit (runs inside the return transaction). Mirrors the accrual rate
+    (points_for_amount) and is CLAMPED so it never drives the balance below zero
+    (the customer may already have spent points). A missing/inactive customer is
+    a no-op. Returns the points reversed (>= 0)."""
+    customer = (
+        await session.execute(
+            select(Customer)
+            .where(Customer.id == customer_id, Customer.is_deleted.is_(False))
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if customer is None:
+        return 0
+    reverse = min(points_for_amount(refunded_total), int(customer.loyalty_points))
+    if reverse <= 0:
+        return 0
+    await _apply_loyalty(
+        session,
+        actor=actor,
+        customer=customer,
+        points_delta=-reverse,
+        txn_type="adjust",
+        reason="return reversal",
+        reference_type="return",
+        reference_id=return_id,
+    )
+    return reverse
+
+
 async def adjust_points(
     session: AsyncSession, *, actor: User, customer: Customer, points_delta: int, reason: str
 ) -> Customer:

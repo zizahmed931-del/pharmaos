@@ -1,10 +1,12 @@
-"""Returns / credit notes (P2-M7).
+"""Returns / credit notes (P2-M7; stock disposition per plan D3 / review C6).
 
 CLAUDE.md rule 14: a completed invoice is NEVER modified. A return is a separate
-credit note that references the original invoice, puts stock back into the SAME
-batch it was sold from (return_in movement + derived-cache update), credits the
-customer at the ORIGINAL price and VAT rate, and records a NEGATIVE payment
-(refund) in the money ledger. Everything happens in ONE transaction.
+credit note that references the original invoice, lands the returned units in a
+DISTINCT batch (quarantined by default for pharmacist review, or active if the
+branch opts in via settings.returned_stock_to_active), credits the customer at
+the ORIGINAL price and VAT rate, reverses the loyalty points earned on the sale
+(clamped), and records a NEGATIVE payment (refund) in the money ledger.
+Everything happens in ONE transaction.
 """
 
 import datetime as dt
@@ -25,12 +27,14 @@ from pharmaos_api.models import (
     MedicationPackaging,
     Return,
     ReturnItem,
+    Settings,
     StockMovement,
     User,
 )
 from pharmaos_api.services import (
     audit_service,
     cashier_service,
+    customer_service,
     inventory_service,
     payment_service,
     tax_service,
@@ -71,6 +75,20 @@ async def _next_return_number(session: AsyncSession, branch_id: uuid.UUID) -> st
         )
     ).scalar_one()
     return f"{prefix}{count + 1:04d}"
+
+
+async def _returned_stock_to_active(session: AsyncSession, branch_id: uuid.UUID) -> bool:
+    """Branch policy (plan D3): returned stock is quarantined by default; a branch
+    may opt in to sending it straight back to sellable. Missing settings row ⇒
+    the safe default (quarantine)."""
+    value = (
+        await session.execute(
+            select(Settings.returned_stock_to_active).where(
+                Settings.branch_id == branch_id, Settings.is_deleted.is_(False)
+            )
+        )
+    ).scalar_one_or_none()
+    return bool(value)
 
 
 async def _returned_qty(session: AsyncSession, invoice_item_id: uuid.UUID) -> Decimal:
@@ -245,23 +263,38 @@ async def create_return(
     session.add(credit_note)
     await session.flush()
 
-    # Pass 2: put stock back into its ORIGINAL batch + write the credit lines.
+    # Returned stock lands in a DISTINCT batch (plan D3): quarantined by default
+    # (pharmacist review before resale), or active if the branch opts in. Using a
+    # separate batch — rather than merging back into the original — lets returned
+    # units carry their own status so only inspected stock becomes sellable.
+    to_active = await _returned_stock_to_active(session, invoice.branch_id)
+    return_status = "active" if to_active else "quarantined"
+
+    # Pass 2: land returned stock in its return batch + write the credit lines.
     for c in computed:
         item = c.item
-        batch = (
+        origin = (
             await session.execute(
-                select(MedicationBatch).where(MedicationBatch.id == item.batch_id).with_for_update()
+                select(MedicationBatch).where(MedicationBatch.id == item.batch_id)
             )
         ).scalar_one()
-        batch.quantity = batch.quantity + c.qty_smallest
-        # A depleted batch that receives returned stock is sellable again.
-        if batch.status == "depleted":
-            batch.status = "active"
-        batch.updated_by = actor.id
+        return_batch = MedicationBatch(
+            branch_id=invoice.branch_id,
+            medication_id=item.medication_id,
+            batch_number=origin.batch_number,
+            expiry_date=origin.expiry_date,
+            quantity=c.qty_smallest,
+            purchase_price=origin.purchase_price,
+            supplier_id=origin.supplier_id,
+            status=return_status,
+            created_by=actor.id,
+        )
+        session.add(return_batch)
+        await session.flush()  # resolve return_batch.id for the movement/line FKs
         session.add(
             StockMovement(
                 branch_id=invoice.branch_id,
-                batch_id=batch.id,
+                batch_id=return_batch.id,
                 movement_type="return_in",
                 quantity_delta=c.qty_smallest,
                 reference_type="return",
@@ -270,8 +303,10 @@ async def create_return(
                 created_by=actor.id,
             )
         )
-        # Only ACTIVE batches contribute to the derived cache (invariant holds).
-        if batch.status == "active":
+        # Only ACTIVE batches contribute to the derived cache (invariant holds);
+        # quarantined returned stock is added to the cache on later release
+        # (inventory_service.set_batch_status).
+        if return_status == "active":
             await inventory_service.apply_cache_delta(
                 session, invoice.branch_id, item.medication_id, c.qty_smallest
             )
@@ -282,7 +317,7 @@ async def create_return(
                 invoice_item_id=item.id,
                 medication_id=item.medication_id,
                 packaging_id=item.packaging_id,
-                batch_id=batch.id,
+                batch_id=return_batch.id,
                 quantity=c.qty,
                 qty_smallest=c.qty_smallest,
                 unit_price=item.unit_price,
@@ -291,6 +326,17 @@ async def create_return(
                 tax_amount=c.tax,
                 created_by=actor.id,
             )
+        )
+
+    # Reverse loyalty points earned on the original sale (clamped, never negative)
+    # — atomic with the credit note. No-op for a walk-in sale (no customer).
+    if invoice.customer_id is not None:
+        await customer_service.reverse_for_return(
+            session,
+            actor=actor,
+            customer_id=invoice.customer_id,
+            refunded_total=total,
+            return_id=credit_note.id,
         )
 
     # Refund in the money ledger (negative), atomic with the credit note.
